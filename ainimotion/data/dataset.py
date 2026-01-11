@@ -42,10 +42,12 @@ class TripletDataset(Dataset):
         self.augment = augment
         self.crop_size = crop_size
         
-        # Find all triplet directories
+        # Find all triplet directories (support both PNG and JPEG)
         self.triplet_dirs = sorted([
             d for d in self.root_dir.iterdir()
-            if d.is_dir() and (d / "f1.png").exists()
+            if d.is_dir() and (
+                (d / "f1.png").exists() or (d / "f1.jpg").exists()
+            )
         ])
         
         if len(self.triplet_dirs) == 0:
@@ -123,10 +125,11 @@ class TripletDataset(Dataset):
         """
         triplet_dir = self.triplet_dirs[idx]
         
-        # Load images
-        f1 = self._load_image(triplet_dir / "f1.png")
-        f2 = self._load_image(triplet_dir / "f2.png")
-        f3 = self._load_image(triplet_dir / "f3.png")
+        # Load images (auto-detect PNG or JPEG)
+        ext = "png" if (triplet_dir / "f1.png").exists() else "jpg"
+        f1 = self._load_image(triplet_dir / f"f1.{ext}")
+        f2 = self._load_image(triplet_dir / f"f2.{ext}")
+        f3 = self._load_image(triplet_dir / f"f3.{ext}")
         
         # Apply augmentations
         if self.augment:

@@ -12,8 +12,8 @@ disc_channels: 64        # Base discriminator channels
 
 # Training
 epochs: 100
-batch_size: 8
-num_workers: 4
+batch_size: 16           # Optimized for RTX 5070 Ti 16GB
+num_workers: 8           # Match CPU cores
 crop_size: [256, 256]    # Random crop size for training
 
 # Learning rates
@@ -38,5 +38,5 @@ log_dir: runs
 checkpoint_dir: checkpoints
 save_every: 10           # Save checkpoint every N epochs
 
-# Data (override via CLI)
-# data_dir: /path/to/triplets
+# Data
+data_dir: E:\Triplets    # Path to triplet dataset
