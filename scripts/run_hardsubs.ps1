@@ -1,7 +1,7 @@
 # Run extraction for HARD SUBBED sources (Crops top and bottom text)
-$InputPath = "D:\Projects\Training\Hard sub"
-$OutputPath = "D:\Projects\Training\Triplets"
-$TempDir = "D:\Projects\Training\Temp"
+$InputPath = "C:\Projects\Training\Hard sub"
+$OutputPath = "E:\Triplets"
+$TempDir = "C:\Projects\Training\Temp"
 
 Write-Host "Starting extraction for HARD SUBBED sources..."
 Write-Host "Input: $InputPath"
@@ -14,6 +14,7 @@ if (-not (Test-Path $TempDir)) {
 }
 
 # Apply both crop-top and crop-bottom (subtitles appear at both locations)
+Set-Location "C:\Projects\AInimotion"
 python scripts/extract_triplets.py --input $InputPath --output $OutputPath --crop-top 150 --crop-bottom 100 --temp-dir $TempDir
 
 Write-Host "Hardsub extraction complete!"

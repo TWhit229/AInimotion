@@ -4,35 +4,37 @@ A practical guide from empty repo to working anime video enhancer.
 
 ---
 
-## Phase 0: Project Setup
+## Phase 0: Project Setup ✅
 *Get the skeleton in place*
 
-- [ ] Create the package structure
-  ```
-  ainimotion/
-    __init__.py
-    cli.py
-    pipeline/
-      __init__.py
-      decode.py
-      analyze.py
-      interpolate.py
-      upscale.py
-      encode.py
-    models/
-      interp/
-      upscale/
-    utils/
-      __init__.py
-      ffmpeg.py
-      metrics.py
-      colorspace.py
-      vram.py
-      logging.py
-  ```
-- [ ] Set up `pyproject.toml` — defines dependencies, entry points, metadata
-- [ ] Create a dev environment — `python -m venv .venv` + install deps
-- [ ] Verify FFmpeg is available — required for decode/encode
+- [x] Create the package structure
+- [x] Set up `pyproject.toml` — defines dependencies, entry points, metadata
+- [x] Create a dev environment
+- [x] Verify FFmpeg is available — required for decode/encode
+
+---
+
+## Phase 0.5: Training Data Pipeline ✅ (CURRENT)
+*Build the triplet extraction system for model training*
+
+| Step | Task | Status |
+|------|------|--------|
+| 0.5.1 | **Triplet extraction script** — extract F1, F2, F3 frame triplets | ✅ |
+| 0.5.2 | **SSIM-based filtering** — filter out static/duplicate frames | ✅ |
+| 0.5.3 | **Parallel processing** — 8-worker ThreadPoolExecutor | ✅ |
+| 0.5.4 | **720p output** — extract frames at 720p for efficiency | ✅ |
+| 0.5.5 | **Chunked processing** — 5-minute chunks to manage temp storage | ✅ |
+| 0.5.6 | **Skip intro** — skip first 120s to avoid logos/credits | ✅ |
+| 0.5.7 | **Hardsub support** — crop top/bottom to remove burned-in subs | ✅ |
+| 0.5.8 | **Helper scripts** — PowerShell scripts for batch processing | ✅ |
+| 0.5.9 | **Progress bars** — tqdm progress for video/chunk/filtering | ✅ |
+
+**Milestone:** ✅ Triplet extraction pipeline complete. Currently processing ~142 videos.
+
+### Extraction Statistics
+- **Output:** 720p PNG triplets
+- **Processing speed:** ~8x faster with parallel workers
+- **Storage:** Chunked processing prevents temp storage overflow
 
 ---
 
@@ -93,50 +95,62 @@ A practical guide from empty repo to working anime video enhancer.
 
 ---
 
-## Phase 5: Harden Quality + Performance
+## Phase 5: Model Training
+*Train custom models on extracted triplets*
+
+| Step | Task | Status |
+|------|------|--------|
+| 5.1 | **Dataset loader** — load triplets for training | [ ] |
+| 5.2 | **Training loop** — implement training with loss functions | [ ] |
+| 5.3 | **Fine-tune interpolator** — train on anime triplets | [ ] |
+| 5.4 | **Fine-tune upscaler** — train on anime with codec degradations | [ ] |
+| 5.5 | **Validation** — test on held-out anime clips | [ ] |
+
+**Milestone:** Custom anime-trained models ready for inference.
+
+---
+
+## Phase 6: Harden Quality + Performance
 *Make it actually good for anime*
 
 | Step | Task | Status |
 |------|------|--------|
-| 5.1 | **Tune gating thresholds** — balance between false cuts and false motion | [ ] |
-| 5.2 | **Bad mid-frame detection** — if interpolated frame looks wrong, fallback to duplicate | [ ] |
-| 5.3 | **FP16 inference** — reduce VRAM usage and improve speed | [ ] |
-| 5.4 | **Memory-aware batching** — auto tile sizing based on available VRAM | [ ] |
-| 5.5 | **NVENC encoding** — optional GPU encoding for speed presets | [ ] |
-| 5.6 | **Benchmark suite** — measure FPS, VRAM, quality metrics | [ ] |
+| 6.1 | **Tune gating thresholds** — balance between false cuts and false motion | [ ] |
+| 6.2 | **Bad mid-frame detection** — if interpolated frame looks wrong, fallback to duplicate | [ ] |
+| 6.3 | **FP16 inference** — reduce VRAM usage and improve speed | [ ] |
+| 6.4 | **Memory-aware batching** — auto tile sizing based on available VRAM | [ ] |
+| 6.5 | **NVENC encoding** — optional GPU encoding for speed presets | [ ] |
+| 6.6 | **Benchmark suite** — measure FPS, VRAM, quality metrics | [ ] |
 
 **Milestone:** Pipeline is stable, fast, and produces high-quality anime-safe output.
 
 ---
 
-## Phase 6: Polish + UX
+## Phase 7: Polish + UX
 *Make it usable*
 
 | Step | Task | Status |
 |------|------|--------|
-| 6.1 | **Better CLI UX** — progress bars, ETA, logging levels | [ ] |
-| 6.2 | **Presets implementation** — `anime-clean`, `anime-strong`, `fast` | [ ] |
-| 6.3 | **Error handling** — corrupt files, unsupported codecs, VRAM failures | [ ] |
-| 6.4 | **Clip mode** — `--clip 00:10:00-00:10:20` for preview renders | [ ] |
-| 6.5 | **Documentation** — usage examples, troubleshooting, FAQ | [ ] |
+| 7.1 | **Better CLI UX** — progress bars, ETA, logging levels | [ ] |
+| 7.2 | **Presets implementation** — `anime-clean`, `anime-strong`, `fast` | [ ] |
+| 7.3 | **Error handling** — corrupt files, unsupported codecs, VRAM failures | [ ] |
+| 7.4 | **Clip mode** — `--clip 00:10:00-00:10:20` for preview renders | [ ] |
+| 7.5 | **Documentation** — usage examples, troubleshooting, FAQ | [ ] |
 
 **Milestone:** AInimotion is ready for public release as a CLI tool.
 
 ---
 
-## Future Phases (Post-MVP)
+## Phase 8: GUI + Packaging
+*Desktop application*
 
-### Phase 7: Custom Model Training
-- [ ] Fine-tune upscaler on anime with realistic codec degradations
-- [ ] Fine-tune interpolator on anime triplets with line-stability regularization
-- [ ] Build training pipeline and dataset curation tools
-
-### Phase 8: GUI + Packaging
-- [ ] Drag/drop desktop UI
-- [ ] Short preview renders in-app
-- [ ] Presets panel + advanced settings
-- [ ] Bundle FFmpeg + runtime + weights
-- [ ] Installer for Windows/macOS/Linux
+| Step | Task | Status |
+|------|------|--------|
+| 8.1 | Drag/drop desktop UI | [ ] |
+| 8.2 | Short preview renders in-app | [ ] |
+| 8.3 | Presets panel + advanced settings | [ ] |
+| 8.4 | Bundle FFmpeg + runtime + weights | [ ] |
+| 8.5 | Installer for Windows/macOS/Linux | [ ] |
 
 ---
 
@@ -151,15 +165,27 @@ A practical guide from empty repo to working anime video enhancer.
 | Interpolation | RIFE / IFRNet (or custom) |
 | Upscaling | Real-ESRGAN / Compact (or custom) |
 | Encoding | FFmpeg (libx264/libx265) or NVENC |
+| Parallel Processing | concurrent.futures.ThreadPoolExecutor |
 
 ---
 
 ## Getting Started
 
-To begin development, start with **Phase 0 + Phase 1**:
+**Current focus: Phase 0.5 (Training Data)**
 
-1. Create the package structure
-2. Write FFmpeg decode/encode utilities
-3. Wire up a basic CLI that does passthrough (decode → encode)
+The triplet extraction pipeline is complete. Run extraction with:
 
-This gives you a working foundation to iterate on.
+```powershell
+cd "D:\Projects\AInimotion"
+.\scripts\run_all_overnight.ps1
+```
+
+Or manually:
+
+```bash
+python scripts/extract_triplets.py \
+  --input "/path/to/anime" \
+  --output "/path/to/triplets" \
+  --temp-dir "/path/to/temp" \
+  --workers 8
+```

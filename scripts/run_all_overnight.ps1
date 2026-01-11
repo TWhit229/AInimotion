@@ -1,14 +1,14 @@
 # Run extraction for ALL sources - both clean and hard subbed
 # This script is designed to be scheduled to run overnight
 
-$CleanPath = "D:\Projects\Training\No Sub"
-$HardsubPath = "D:\Projects\Training\Hard sub"
-$OutputPath = "D:\Projects\Training\Triplets"
-$TempDir = "D:\Projects\Training\Temp"
-$ScriptDir = "D:\Projects\AInimotion"
+$CleanPath = "C:\Projects\Training\No Sub"
+$HardsubPath = "C:\Projects\Training\Hard sub"
+$OutputPath = "E:\Triplets"
+$TempDir = "C:\Projects\Training\Temp"
+$ScriptDir = "C:\Projects\AInimotion"
 
 # Log file for tracking progress
-$LogFile = "D:\Projects\Training\Triplets\extraction_log.txt"
+$LogFile = "E:\Triplets\extraction_log.txt"
 
 function Write-Log {
     param([string]$Message)

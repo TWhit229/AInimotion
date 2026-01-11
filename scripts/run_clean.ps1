@@ -1,7 +1,7 @@
 # Run extraction for CLEAN sources (No subtitles)
-$InputPath = "D:\Projects\Training\No Sub"
-$OutputPath = "D:\Projects\Training\Triplets"
-$TempDir = "D:\Projects\Training\Temp"
+$InputPath = "C:\Projects\Training\No Sub"
+$OutputPath = "E:\Triplets"
+$TempDir = "C:\Projects\Training\Temp"
 
 Write-Host "Starting extraction for CLEAN sources..."
 Write-Host "Input: $InputPath"
@@ -13,6 +13,7 @@ if (-not (Test-Path $TempDir)) {
 }
 
 # No crop argument needed
+Set-Location "C:\Projects\AInimotion"
 python scripts/extract_triplets.py --input $InputPath --output $OutputPath --temp-dir $TempDir
 
 Write-Host "Clean extraction complete!"

@@ -10,6 +10,59 @@
 
 ---
 
+## Current Status: Training Data Preparation ✅
+
+We're currently in **Phase 0.5** — building the training data extraction pipeline before model training.
+
+### Triplet Extraction Tool
+
+The `extract_triplets.py` script extracts high-quality training triplets (F1, F2, F3) from anime videos:
+
+```bash
+python scripts/extract_triplets.py \
+  --input "/path/to/anime/videos" \
+  --output "/path/to/triplets" \
+  --temp-dir "/path/to/temp" \
+  --workers 8
+```
+
+#### Features
+
+| Feature | Description |
+|---------|-------------|
+| **Parallel Processing** | 8-worker parallel validation for 8x speedup |
+| **720p Output** | Frames extracted at 720p to reduce storage/processing |
+| **Chunked Processing** | 5-minute chunks to manage temp storage |
+| **Skip Intro** | Skips first 120s to avoid logos/credits |
+| **Motion Filtering** | SSIM-based filtering removes static/duplicate frames |
+| **Hardsub Support** | Top/bottom cropping to remove burned-in subtitles |
+
+#### Command-Line Options
+
+```
+--input, -i          Input video file or directory
+--output, -o         Output directory for triplets
+--temp-dir           Temporary storage directory
+--workers, -w        Parallel workers (default: 8)
+--skip-intro         Seconds to skip at start (default: 120)
+--min-motion         Motion threshold (default: 0.90, lower=stricter)
+--crop-top           Pixels to crop from top
+--crop-bottom        Pixels to crop from bottom
+--height             Output height (default: 720)
+--width              Output width (default: 1280)
+```
+
+#### Helper Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `run_all_overnight.ps1` | Process all videos (clean + hardsubs) |
+| `run_clean.ps1` | Process clean (no subtitle) sources |
+| `run_hardsubs.ps1` | Process videos with burned-in subs |
+| `run_test.ps1` | Test on a single video |
+
+---
+
 ## Why 48 FPS (not 60)?
 
 Anime is often authored at ~24 FPS (and frequently animated "on 2s" / held frames). Doubling to **48 FPS** is a clean, consistent **2×** step:
@@ -44,6 +97,28 @@ Anime is often authored at ~24 FPS (and frequently animated "on 2s" / held frame
 
 ---
 
+## Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/TWhit229/AInimotion.git
+cd AInimotion
+
+# Install dependencies
+pip install -e .
+
+# Additional requirements for triplet extraction
+pip install numpy pillow scikit-image tqdm
+```
+
+### Requirements
+
+- Python 3.10+
+- FFmpeg (must be in PATH)
+- For training: NVIDIA GPU with CUDA support
+
+---
+
 ## How It Works
 
 **Decode → Gate → Interpolate → Upscale → Encode**
@@ -56,105 +131,19 @@ Anime is often authored at ~24 FPS (and frequently animated "on 2s" / held frame
 4. **Upscale** every output frame (Model B)
 5. **Encode** video + remux audio/subs (FFmpeg / NVENC optional)
 
-### Why "Interpolate → Upscale" is the default
-
-Upscalers can introduce tiny frame-to-frame changes (micro-sharpening, edge halos, texture crawl). If you upscale first, interpolation may treat those differences as motion and create shimmer/wobble.
-
-Interpolate first at source resolution to keep motion estimation stable on clean line art, then upscale the finalized frames.
-
 ---
 
 ## Presets
 
 | Preset | Description |
 |--------|-------------|
-| `anime-clean` | Most conservative. Best for line stability (faces, eyes, outlines). Strong gating + safe interpolation settings. **(default)** |
-| `anime-strong` | More aggressive restoration (denoise/deblock). Slightly higher risk of "processed" look. |
-| `fast` | Prioritizes speed. Uses lighter models. Intended for quick iteration / previews. |
-
-> AInimotion is designed so you can swap models and presets without rewriting the pipeline.
-
----
-
-## Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/ainimotion.git
-cd ainimotion
-
-# Install dependencies
-pip install -e .
-```
-
-### Requirements
-
-- Python 3.10+
-- FFmpeg (bundled later, or available in PATH)
-- NVIDIA GPU with CUDA support
-- Sufficient VRAM for chosen scale/model (tiling reduces requirements)
-
----
-
-## CLI Usage
-
-```bash
-ainimotion enhance "input.mkv" \
-  --out "output_1440p_48fps.mkv" \
-  --scale 1.333 \
-  --fps 48 \
-  --preset anime-clean
-```
-
-### Examples
-
-**Anime Clean (recommended):**
-
-```bash
-ainimotion enhance input.mkv --out output.mkv --fps 48 --scale 1.333 --preset anime-clean
-```
-
-**Fast preview render (short segment):**
-
-```bash
-ainimotion enhance input.mkv --out preview.mkv --fps 48 --scale 1.333 --preset fast --clip 00:10:00-00:10:20
-```
-
-**Override gating thresholds (advanced):**
-
-```bash
-ainimotion enhance input.mkv --out output.mkv --fps 48 --scale 1.333 \
-  --hold-threshold 0.003 --cut-threshold 0.35
-```
-
----
-
-## Gating: Scene Cuts + Holds
-
-The "anime-safe" core of AInimotion.
-
-### Scene cut detection
-
-Interpolation across a hard cut produces nightmare blended frames. AInimotion detects cuts and disables interpolation for that interval.
-
-### Hold / still detection
-
-Anime commonly uses held frames. If two adjacent frames are essentially the same, AInimotion duplicates frames to reach 48 FPS instead of inventing motion.
-
-**How it works:**
-
-- Compare **downscaled luma** (Y channel) to ignore tiny compression flicker
-- Use a similarity metric (SSIM or mean absolute difference)
-- Three bands:
-  - **Cut**: large change → no interpolation
-  - **Hold**: tiny change → duplicate
-  - **Motion**: interpolate
+| `anime-clean` | Most conservative. Best for line stability. **(default)** |
+| `anime-strong` | More aggressive restoration (denoise/deblock). |
+| `fast` | Prioritizes speed. Uses lighter models. |
 
 ---
 
 ## Architecture
-
-AInimotion is built as a modular, pipelined system:
 
 ```
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
@@ -163,72 +152,52 @@ AInimotion is built as a modular, pipelined system:
 └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
 ```
 
-- **Stage 1: Decode** — FFmpeg decodes frames to a queue; extracts audio/subs metadata.
-- **Stage 2: Analyze/Gate** — Computes per-interval cut/hold decisions.
-- **Stage 3: Interpolate** — Consumes frame pairs and outputs mid-frames selectively.
-- **Stage 4: Upscale/Restore** — Upscales each produced frame (tiling + FP16).
-- **Stage 5: Encode** — FFmpeg encodes final frames and remuxes audio/subs.
-
-### Queue-based pipeline
-
-The program keeps the system busy by overlapping:
-
-- Decoding while GPU is working
-- Gating while decoding
-- Encoding while next frames are processing
-
 ---
 
 ## Project Structure
 
 ```text
-ainimotion/
+AInimotion/
   README.md
+  ROADMAP.md
   LICENSE
   pyproject.toml
   ainimotion/
     __init__.py
-    cli.py
-    pipeline/
-      decode.py
-      analyze.py
-      interpolate.py
-      upscale.py
-      encode.py
+    data/
+      dataset.py          # Training dataset loader
     models/
-      interp/   (Model A weights/config)
-      upscale/  (Model B weights/config)
-    utils/
-      ffmpeg.py
-      metrics.py
-      colorspace.py
-      vram.py
-      logging.py
+      interp/             # Interpolation model
+    training/
+      train.py            # Training loop
+      losses.py           # Loss functions
+      discriminator.py    # GAN discriminator
   scripts/
-    benchmark.py
-    render_clip.py
-  tests/
-    test_gating.py
-    test_timestamps.py
+    extract_triplets.py   # Training data extraction ✅
+    run_all_overnight.ps1 # Batch processing script ✅
+    run_clean.ps1         # Clean sources script ✅
+    run_hardsubs.ps1      # Hardsub sources script ✅
+    run_test.ps1          # Test script ✅
+  configs/
+    interp_training.yaml  # Training configuration
 ```
-
----
-
-## Limitations
-
-- Some anime effects are intentionally non-physical (smears, impact frames). Interpolation can't always "guess right."
-- Web encodes with heavy artifacts can confuse motion; gating and light cleanup help.
-- For maximum quality, expect offline render times.
 
 ---
 
 ## Roadmap
 
 - [x] Phase 0 — Foundations (platform target, inference runtime, presets)
+- [x] **Phase 0.5 — Training Data Pipeline** ✅
+  - [x] Triplet extraction script
+  - [x] Parallel processing (8 workers)
+  - [x] 720p output for efficiency
+  - [x] Chunked processing for memory
+  - [x] Skip intro (logos/credits)
+  - [x] Hardsub support (crop top/bottom)
 - [ ] Phase 1 — MVP CLI (end-to-end pipeline)
 - [ ] Phase 2 — Quality hardening (anime-specific tuning)
 - [ ] Phase 3 — Performance + VRAM stability
-- [ ] Phase 4 — Model strategy (fine-tuning on anime)
+- [ ] Phase 4 — Model training on extracted triplets
 - [ ] Phase 5 — GUI + packaging
 
 ---
@@ -241,7 +210,7 @@ AInimotion is intended for processing video **you have the rights/permission to 
 
 ## Contributing
 
-PRs welcome once the MVP CLI is stable! Useful contributions:
+PRs welcome! Useful contributions:
 
 - Better cut/hold heuristics
 - More presets / model configs
@@ -253,5 +222,3 @@ PRs welcome once the MVP CLI is stable! Useful contributions:
 ## License
 
 This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
-
-Model weights may have separate licenses depending on their source.
