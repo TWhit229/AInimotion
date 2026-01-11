@@ -10,11 +10,37 @@
 
 ---
 
-## Current Status: Training Data Ready ✅
+## Current Status: Ready for Training 🚀
 
-**65,906 triplets extracted** from diverse anime sources. Ready for model training!
+**65,906 triplets extracted** from diverse anime sources. Training infrastructure ready!
 
-### Triplet Extraction Tool
+### Quick Start Training
+
+```powershell
+cd "C:\Projects\AInimotion"
+python -m ainimotion.training.train --config configs/interp_training.yaml --data "E:\Triplets"
+```
+
+### Training Features
+
+| Feature | Description |
+|---------|-------------|
+| **LayeredInterpolator** | FPN + Scene Gate + AdaCoF + Background Flow |
+| **GAN Training** | PatchDiscriminator with LSGAN loss |
+| **Mixed Precision** | FP16 for faster training, lower VRAM |
+| **Progress Bars** | tqdm progress for epochs and batches |
+| **Checkpointing** | Auto-save every 10 epochs, resume support |
+| **TensorBoard** | Real-time loss visualization |
+
+### Requirements
+
+- **GPU**: NVIDIA RTX 3070 or better (16GB+ VRAM recommended)
+- **PyTorch**: 2.9+ with CUDA 12.8+
+- **Dataset**: 65,906 triplets in E:\Triplets
+
+---
+
+## Triplet Extraction Tool
 
 The `extract_triplets.py` script extracts high-quality training triplets (F1, F2, F3) from anime videos:
 
@@ -26,7 +52,7 @@ python scripts/extract_triplets.py \
   --workers 8
 ```
 
-#### Features
+#### Extraction Features
 
 | Feature | Description |
 |---------|-------------|
@@ -37,23 +63,6 @@ python scripts/extract_triplets.py \
 | **Skip Intro** | Skips first 120s to avoid logos/credits |
 | **Motion Filtering** | SSIM-based filtering removes static/duplicate frames |
 | **Hardsub Support** | Top/bottom cropping to remove burned-in subtitles |
-
-#### Command-Line Options
-
-```
---input, -i          Input video file or directory
---output, -o         Output directory for triplets
---temp-dir           Temporary storage directory
---workers, -w        Parallel workers (default: 8)
---skip-intro         Seconds to skip at start (default: 120)
---min-motion         Motion threshold (default: 0.90, lower=stricter)
---format             Output format: jpeg (default) or png
---jpeg-quality       JPEG quality 1-100 (default: 95)
---crop-top           Pixels to crop from top
---crop-bottom        Pixels to crop from bottom
---height             Output height (default: 720)
---width              Output width (default: 1280)
-```
 
 #### Helper Scripts
 

@@ -97,18 +97,29 @@ A practical guide from empty repo to working anime video enhancer.
 
 ---
 
-## Phase 5: Model Training
+## Phase 5: Model Training ⚡ CURRENT
 *Train custom models on extracted triplets*
 
 | Step | Task | Status |
 |------|------|--------|
-| 5.1 | **Dataset loader** — load triplets for training | [ ] |
-| 5.2 | **Training loop** — implement training with loss functions | [ ] |
-| 5.3 | **Fine-tune interpolator** — train on anime triplets | [ ] |
-| 5.4 | **Fine-tune upscaler** — train on anime with codec degradations | [ ] |
-| 5.5 | **Validation** — test on held-out anime clips | [ ] |
+| 5.1 | **Dataset loader** — load triplets for training | ✅ |
+| 5.2 | **Training loop** — implement training with loss functions | ✅ |
+| 5.3 | **Progress bars** — tqdm for epochs and batches | ✅ |
+| 5.4 | **Mixed precision** — FP16 for faster training | ✅ |
+| 5.5 | **Checkpointing** — save/resume training | ✅ |
+| 5.6 | **TensorBoard** — real-time loss visualization | ✅ |
+| 5.7 | **Train interpolator** — train on 65K triplets | 🔄 In Progress |
+| 5.8 | **Validation** — test on held-out anime clips | [ ] |
 
-**Milestone:** Custom anime-trained models ready for inference.
+### Training Configuration
+- **Model:** LayeredInterpolator (FPN + SceneGate + AdaCoF)
+- **Dataset:** 65,906 triplets at 720p
+- **GPU:** RTX 5070 Ti (16GB VRAM)
+- **Batch size:** 16
+- **Epochs:** 100
+- **ETA:** ~12-24 hours
+
+**Milestone:** Custom anime-trained interpolation model ready for inference.
 
 ---
 
