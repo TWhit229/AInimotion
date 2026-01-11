@@ -286,25 +286,46 @@ class Trainer:
         """Main training loop."""
         epochs = self.config.get('epochs', 100)
         
-        for epoch in range(self.start_epoch, epochs):
+        # Outer progress bar for epochs
+        epoch_pbar = tqdm(
+            range(self.start_epoch, epochs),
+            desc="Training",
+            unit="epoch",
+            position=0,
+        )
+        
+        for epoch in epoch_pbar:
             losses = self.train_epoch(dataloader, epoch)
             
             # Step schedulers
             self.scheduler_g.step()
             self.scheduler_d.step()
             
+            # Update outer progress bar
+            epoch_pbar.set_postfix({
+                "g_loss": f"{losses['g_total']:.4f}",
+                "d_loss": f"{losses['d_total']:.4f}",
+                "lr": f"{self.scheduler_g.get_last_lr()[0]:.2e}",
+            })
+            
             # Log epoch summary
-            print(f"\nEpoch {epoch} summary:")
+            print(f"\nEpoch {epoch}/{epochs-1} complete:")
             for k, v in losses.items():
                 print(f"  {k}: {v:.4f}")
+                self.writer.add_scalar(f'epoch/{k}', v, epoch)
             
             # Save checkpoint
             if (epoch + 1) % self.config.get('save_every', 10) == 0:
                 self._save_checkpoint(epoch)
+                print(f"  Saved checkpoint: epoch {epoch}")
         
         # Final checkpoint
         self._save_checkpoint(epochs - 1)
         self.writer.close()
+        print(f"\n{'='*50}")
+        print(f"Training complete! {epochs} epochs")
+        print(f"Checkpoints saved to: {self.checkpoint_dir}")
+        print(f"{'='*50}")
 
 
 def main():
