@@ -105,7 +105,7 @@ class Trainer:
         
         # Mixed precision
         self.use_amp = config.get('use_amp', True)
-        self.scaler = GradScaler(enabled=self.use_amp)
+        self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
         
         # Logging
         self.log_dir = Path(config.get('log_dir', 'runs')) / datetime.now().strftime('%Y%m%d_%H%M%S')

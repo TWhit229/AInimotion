@@ -123,13 +123,22 @@ class TripletDataset(Dataset):
                 - 'frame2': (C, H, W) tensor, middle frame (target)
                 - 'inputs': (2, C, H, W) tensor, stacked inputs
         """
-        triplet_dir = self.triplet_dirs[idx]
-        
-        # Load images (auto-detect PNG or JPEG)
-        ext = "png" if (triplet_dir / "f1.png").exists() else "jpg"
-        f1 = self._load_image(triplet_dir / f"f1.{ext}")
-        f2 = self._load_image(triplet_dir / f"f2.{ext}")
-        f3 = self._load_image(triplet_dir / f"f3.{ext}")
+        # Try to load the triplet, skip corrupted ones
+        try:
+            triplet_dir = self.triplet_dirs[idx]
+            
+            # Load images (auto-detect PNG or JPEG)
+            ext = "png" if (triplet_dir / "f1.png").exists() else "jpg"
+            f1 = self._load_image(triplet_dir / f"f1.{ext}")
+            f2 = self._load_image(triplet_dir / f"f2.{ext}")
+            f3 = self._load_image(triplet_dir / f"f3.{ext}")
+            
+        except Exception as e:
+            # If corrupted, return a random different sample
+            new_idx = random.randint(0, len(self) - 1)
+            if new_idx == idx:
+                new_idx = (idx + 1) % len(self)
+            return self.__getitem__(new_idx)
         
         # Apply augmentations
         if self.augment:
