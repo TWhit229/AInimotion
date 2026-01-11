@@ -44,6 +44,10 @@ class TripletConfig:
     temp_dir: Path | None = None
     # Seconds to skip at start of video (avoid logos/credits)
     skip_intro: float = 120.0
+    # Output format: 'jpeg' or 'png'
+    output_format: str = 'jpeg'
+    # JPEG quality (1-100, higher = better quality, larger files)
+    jpeg_quality: int = 95
 
 
 def extract_frames_ffmpeg(
@@ -203,6 +207,8 @@ def save_triplet(
     f3_path: Path,
     output_dir: Path,
     triplet_idx: int,
+    output_format: str = 'jpeg',
+    jpeg_quality: int = 95,
 ) -> Path:
     """
     Save a triplet to the output directory.
@@ -213,6 +219,8 @@ def save_triplet(
         f1_path, f2_path, f3_path: Source frame paths
         output_dir: Base output directory
         triplet_idx: Index for naming the triplet directory
+        output_format: 'jpeg' or 'png'
+        jpeg_quality: JPEG quality (1-100)
         
     Returns:
         Path to the created triplet directory
@@ -220,9 +228,16 @@ def save_triplet(
     triplet_dir = output_dir / f"triplet_{triplet_idx:08d}"
     triplet_dir.mkdir(parents=True, exist_ok=True)
     
-    shutil.copy(f1_path, triplet_dir / "f1.png")
-    shutil.copy(f2_path, triplet_dir / "f2.png")
-    shutil.copy(f3_path, triplet_dir / "f3.png")
+    if output_format == 'png':
+        # Copy PNG directly
+        shutil.copy(f1_path, triplet_dir / "f1.png")
+        shutil.copy(f2_path, triplet_dir / "f2.png")
+        shutil.copy(f3_path, triplet_dir / "f3.png")
+    else:
+        # Convert to JPEG for smaller file size
+        for src, name in [(f1_path, "f1"), (f2_path, "f2"), (f3_path, "f3")]:
+            img = Image.open(src)
+            img.save(triplet_dir / f"{name}.jpg", "JPEG", quality=jpeg_quality)
     
     return triplet_dir
 
@@ -344,7 +359,8 @@ def process_video(
             def validate_and_save(args):
                 f1_path, f2_path, f3_path, idx = args
                 if is_valid_triplet(f1_path, f2_path, f3_path, config):
-                    save_triplet(f1_path, f2_path, f3_path, output_dir, idx)
+                    save_triplet(f1_path, f2_path, f3_path, output_dir, idx,
+                                 config.output_format, config.jpeg_quality)
                     return True
                 return False
             
@@ -465,6 +481,19 @@ def main():
         default=120.0,
         help="Seconds to skip at start of each video to avoid logos/credits (default: 120)"
     )
+    parser.add_argument(
+        "--format",
+        type=str,
+        choices=['jpeg', 'png'],
+        default='jpeg',
+        help="Output image format: jpeg (smaller, ~1.5MB/triplet) or png (lossless, ~14MB/triplet)"
+    )
+    parser.add_argument(
+        "--jpeg-quality",
+        type=int,
+        default=95,
+        help="JPEG quality 1-100 (default: 95, higher = better quality, larger files)"
+    )
     
     args = parser.parse_args()
     
@@ -478,6 +507,8 @@ def main():
         temp_dir=args.temp_dir,
         num_workers=args.workers,
         skip_intro=args.skip_intro,
+        output_format=args.format,
+        jpeg_quality=args.jpeg_quality,
     )
     
     # Find videos
