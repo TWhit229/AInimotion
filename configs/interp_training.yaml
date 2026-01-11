@@ -1,0 +1,42 @@
+# LayeredInterpolator Training Configuration
+# ============================================
+
+# Model Architecture
+base_channels: 32        # Base feature channels (doubled at each level)
+kernel_size: 7           # AdaCoF kernel size (K×K)
+grid_size: 8             # Background affine grid size
+use_refinement: true     # Use refinement U-Net in compositor
+
+# Discriminator
+disc_channels: 64        # Base discriminator channels
+
+# Training
+epochs: 100
+batch_size: 8
+num_workers: 4
+crop_size: [256, 256]    # Random crop size for training
+
+# Learning rates
+lr_g: 0.0001             # Generator learning rate
+lr_d: 0.0001             # Discriminator learning rate
+weight_decay: 0.01       # AdamW weight decay
+
+# Loss weights
+l1_weight: 1.0           # L1 reconstruction loss
+perceptual_weight: 0.1   # VGG perceptual loss
+edge_weight: 0.5         # Edge-weighted L1 loss
+gan_weight: 0.01         # Adversarial loss weight
+
+# GAN configuration
+gan_type: lsgan          # 'vanilla', 'lsgan', or 'hinge'
+
+# Mixed precision
+use_amp: true            # Use automatic mixed precision (FP16)
+
+# Logging and checkpointing
+log_dir: runs
+checkpoint_dir: checkpoints
+save_every: 10           # Save checkpoint every N epochs
+
+# Data (override via CLI)
+# data_dir: /path/to/triplets
