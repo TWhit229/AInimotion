@@ -14,7 +14,7 @@ A practical guide from empty repo to working anime video enhancer.
 
 ---
 
-## Phase 0.5: Training Data Pipeline ✅ (CURRENT)
+## Phase 0.5: Training Data Pipeline ✅ COMPLETE
 *Build the triplet extraction system for model training*
 
 | Step | Task | Status |
@@ -28,13 +28,15 @@ A practical guide from empty repo to working anime video enhancer.
 | 0.5.7 | **Hardsub support** — crop top/bottom to remove burned-in subs | ✅ |
 | 0.5.8 | **Helper scripts** — PowerShell scripts for batch processing | ✅ |
 | 0.5.9 | **Progress bars** — tqdm progress for video/chunk/filtering | ✅ |
+| 0.5.10 | **JPEG output** — 10x smaller files with quality 95 default | ✅ |
 
-**Milestone:** ✅ Triplet extraction pipeline complete. Currently processing ~142 videos.
+**Milestone:** ✅ **65,906 triplets extracted** from diverse anime sources!
 
-### Extraction Statistics
-- **Output:** 720p PNG triplets
-- **Processing speed:** ~8x faster with parallel workers
-- **Storage:** Chunked processing prevents temp storage overflow
+### Dataset Statistics
+- **Total triplets:** 65,906
+- **Format:** PNG (existing) / JPEG (new default)
+- **Resolution:** 720p
+- **Sources:** Movies, TV series, various studios
 
 ---
 

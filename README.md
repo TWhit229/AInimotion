@@ -10,9 +10,9 @@
 
 ---
 
-## Current Status: Training Data Preparation ✅
+## Current Status: Training Data Ready ✅
 
-We're currently in **Phase 0.5** — building the training data extraction pipeline before model training.
+**65,906 triplets extracted** from diverse anime sources. Ready for model training!
 
 ### Triplet Extraction Tool
 
@@ -30,6 +30,7 @@ python scripts/extract_triplets.py \
 
 | Feature | Description |
 |---------|-------------|
+| **JPEG Output** | Default format, ~1.5 MB/triplet (10x smaller than PNG) |
 | **Parallel Processing** | 8-worker parallel validation for 8x speedup |
 | **720p Output** | Frames extracted at 720p to reduce storage/processing |
 | **Chunked Processing** | 5-minute chunks to manage temp storage |
@@ -46,6 +47,8 @@ python scripts/extract_triplets.py \
 --workers, -w        Parallel workers (default: 8)
 --skip-intro         Seconds to skip at start (default: 120)
 --min-motion         Motion threshold (default: 0.90, lower=stricter)
+--format             Output format: jpeg (default) or png
+--jpeg-quality       JPEG quality 1-100 (default: 95)
 --crop-top           Pixels to crop from top
 --crop-bottom        Pixels to crop from bottom
 --height             Output height (default: 720)
