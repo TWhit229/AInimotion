@@ -15,7 +15,7 @@ from datetime import datetime
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import yaml
@@ -176,18 +176,18 @@ class Trainer:
             batch: Dictionary with 'frame1', 'frame2', 'frame3', 'inputs'
             
         Returns:
-            Dictionary of loss values
+            Dictionary of loss values and metrics
         """
-        frame1 = batch['frame1'].to(self.device)
-        frame2 = batch['frame2'].to(self.device)  # Target
-        frame3 = batch['frame3'].to(self.device)
+        frame1 = batch['frame1'].to(self.device, non_blocking=True)
+        frame2 = batch['frame2'].to(self.device, non_blocking=True)  # Target
+        frame3 = batch['frame3'].to(self.device, non_blocking=True)
         
         losses = {}
         
         # ============ Train Discriminator ============
         self.optimizer_d.zero_grad()
         
-        with autocast(enabled=self.use_amp):
+        with torch.amp.autocast('cuda', enabled=self.use_amp):
             # Generate fake frame
             with torch.no_grad():
                 output = self.generator(frame1, frame3)
@@ -206,14 +206,21 @@ class Trainer:
         self.scaler.scale(loss_d).backward()
         self.scaler.step(self.optimizer_d)
         
+        # Discriminator accuracy (how well it distinguishes real/fake)
+        with torch.no_grad():
+            d_acc_real = (pred_real.mean() > 0.5).float().item()
+            d_acc_fake = (pred_fake.mean() < 0.5).float().item()
+            d_acc = (d_acc_real + d_acc_fake) / 2
+        
         losses['d_real'] = loss_d_real.item()
         losses['d_fake'] = loss_d_fake.item()
         losses['d_total'] = loss_d.item()
+        losses['d_acc'] = d_acc
         
         # ============ Train Generator ============
         self.optimizer_g.zero_grad()
         
-        with autocast(enabled=self.use_amp):
+        with torch.amp.autocast('cuda', enabled=self.use_amp):
             # Forward pass
             output = self.generator(frame1, frame3)
             fake_frame = output['output']
@@ -233,14 +240,35 @@ class Trainer:
             loss_g = loss_vfi + self.gan_weight * loss_g_gan
         
         self.scaler.scale(loss_g).backward()
+        
+        # Compute gradient norm before stepping
+        grad_norm_g = 0.0
+        for p in self.generator.parameters():
+            if p.grad is not None:
+                grad_norm_g += p.grad.data.norm(2).item() ** 2
+        grad_norm_g = grad_norm_g ** 0.5
+        
         self.scaler.step(self.optimizer_g)
         self.scaler.update()
+        
+        # Compute PSNR
+        with torch.no_grad():
+            mse = F.mse_loss(fake_frame, frame2)
+            psnr = 10 * torch.log10(1.0 / (mse + 1e-8)).item()
+            
+            # Scene cut detection rate
+            scene_cuts = output.get('is_scene_cut', torch.zeros(1))
+            scene_cut_rate = scene_cuts.float().mean().item()
         
         losses['g_l1'] = vfi_components['l1'].item()
         losses['g_perceptual'] = vfi_components['perceptual'].item()
         losses['g_edge'] = vfi_components['edge'].item()
         losses['g_gan'] = loss_g_gan.item()
         losses['g_total'] = loss_g.item()
+        losses['grad_norm'] = grad_norm_g
+        losses['psnr'] = psnr
+        losses['scene_cut_rate'] = scene_cut_rate
+        losses['lr'] = self.scheduler_g.get_last_lr()[0]
         
         return losses
     
@@ -255,7 +283,7 @@ class Trainer:
         
         epoch_losses = {}
         
-        pbar = tqdm(dataloader, desc=f'Epoch {epoch}')
+        pbar = tqdm(dataloader, desc=f'Epoch {epoch}', leave=False)
         for batch in pbar:
             losses = self.train_step(batch)
             self.global_step += 1
@@ -264,10 +292,12 @@ class Trainer:
             for k, v in losses.items():
                 epoch_losses[k] = epoch_losses.get(k, 0) + v
             
-            # Update progress bar
+            # Update progress bar with key metrics
             pbar.set_postfix({
-                'g_loss': f"{losses['g_total']:.4f}",
-                'd_loss': f"{losses['d_total']:.4f}",
+                'g': f"{losses['g_total']:.3f}",
+                'd': f"{losses['d_total']:.3f}",
+                'psnr': f"{losses['psnr']:.1f}",
+                'd_acc': f"{losses['d_acc']:.0%}",
             })
             
             # Log to tensorboard

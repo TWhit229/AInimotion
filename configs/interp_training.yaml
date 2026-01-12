@@ -12,8 +12,8 @@ disc_channels: 64        # Base discriminator channels
 
 # Training
 epochs: 100
-batch_size: 16           # Optimized for RTX 5070 Ti 16GB
-num_workers: 8           # Match CPU cores
+batch_size: 8            # Reduced for stability, increase if VRAM allows
+num_workers: 4           # Reduced to avoid I/O bottleneck on E: drive
 crop_size: [256, 256]    # Random crop size for training
 
 # Learning rates
