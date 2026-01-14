@@ -1,5 +1,6 @@
 # LayeredInterpolator Training Configuration
 # ============================================
+# Optimized for RTX 5070 Ti (16GB VRAM)
 
 # Model Architecture
 base_channels: 32        # Base feature channels (doubled at each level)
@@ -12,8 +13,8 @@ disc_channels: 64        # Base discriminator channels
 
 # Training
 epochs: 100
-batch_size: 8            # Reduced for stability, increase if VRAM allows
-num_workers: 4           # Reduced to avoid I/O bottleneck on E: drive
+batch_size: 16           # Optimized for 5070 Ti 16GB VRAM
+num_workers: 8           # Match CPU cores for faster loading
 crop_size: [256, 256]    # Random crop size for training
 
 # Learning rates
@@ -36,7 +37,9 @@ use_amp: true            # Use automatic mixed precision (FP16)
 # Logging and checkpointing
 log_dir: runs
 checkpoint_dir: checkpoints
-save_every: 10           # Save checkpoint every N epochs
+save_every: 1            # Save checkpoint every epoch
+save_every_batches: 1000 # Also save every N batches (0 to disable)
 
 # Data
 data_dir: E:\Triplets    # Path to triplet dataset
+

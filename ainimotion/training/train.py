@@ -356,6 +356,158 @@ class Trainer:
         print(f"Training complete! {epochs} epochs")
         print(f"Checkpoints saved to: {self.checkpoint_dir}")
         print(f"{'='*50}")
+    
+    def train_with_recovery(self, dataloader: torch.utils.data.DataLoader):
+        """
+        Main training loop with error recovery and graceful shutdown.
+        
+        Features:
+        - Saves checkpoint on Ctrl+C
+        - Saves checkpoint every N batches
+        - Catches CUDA OOM and saves checkpoint
+        """
+        import signal
+        
+        epochs = self.config.get('epochs', 100)
+        save_every_batches = self.config.get('save_every_batches', 500)
+        
+        # Flag for graceful shutdown
+        self._interrupted = False
+        
+        def signal_handler(signum, frame):
+            print("\n\n⚠️  Ctrl+C detected! Saving checkpoint...")
+            self._interrupted = True
+        
+        # Register signal handler
+        original_handler = signal.signal(signal.SIGINT, signal_handler)
+        
+        print(f"\n{'='*50}")
+        print(f"Training started!")
+        print(f"  Epochs: {self.start_epoch} → {epochs-1}")
+        print(f"  Batches/epoch: {len(dataloader)}")
+        print(f"  Checkpoint saves: every {save_every_batches} batches + every epoch")
+        print(f"  Press Ctrl+C to stop and save")
+        print(f"{'='*50}\n")
+        
+        try:
+            # Outer progress bar for epochs
+            epoch_pbar = tqdm(
+                range(self.start_epoch, epochs),
+                desc="Training",
+                unit="epoch",
+                position=0,
+            )
+            
+            for epoch in epoch_pbar:
+                if self._interrupted:
+                    break
+                
+                # Train one epoch with batch checkpointing
+                losses = self._train_epoch_with_recovery(
+                    dataloader, epoch, save_every_batches
+                )
+                
+                if self._interrupted:
+                    break
+                
+                # Step schedulers
+                self.scheduler_g.step()
+                self.scheduler_d.step()
+                
+                # Update outer progress bar
+                epoch_pbar.set_postfix({
+                    "g_loss": f"{losses['g_total']:.4f}",
+                    "d_loss": f"{losses['d_total']:.4f}",
+                    "lr": f"{self.scheduler_g.get_last_lr()[0]:.2e}",
+                })
+                
+                # Log epoch summary
+                print(f"\nEpoch {epoch}/{epochs-1} complete:")
+                for k, v in losses.items():
+                    print(f"  {k}: {v:.4f}")
+                    self.writer.add_scalar(f'epoch/{k}', v, epoch)
+                
+                # Save epoch checkpoint
+                self._save_checkpoint(epoch)
+                print(f"  ✓ Checkpoint saved: epoch {epoch}")
+        
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                print(f"\n❌ CUDA Out of Memory! Saving checkpoint...")
+                self._save_checkpoint(epoch, is_best=False)
+                print(f"💡 Try reducing batch_size in config")
+                raise
+            else:
+                print(f"\n❌ Error: {e}")
+                self._save_checkpoint(epoch, is_best=False)
+                raise
+        
+        finally:
+            # Restore original signal handler
+            signal.signal(signal.SIGINT, original_handler)
+            
+            # Save final checkpoint
+            if self._interrupted:
+                self._save_checkpoint(epoch if 'epoch' in dir() else self.start_epoch)
+                print(f"\n✓ Checkpoint saved on interrupt!")
+                print(f"  Resume with: --resume {self.checkpoint_dir}/checkpoint_latest.pt")
+            
+            self.writer.close()
+        
+        if not self._interrupted:
+            print(f"\n{'='*50}")
+            print(f"✓ Training complete! {epochs} epochs")
+            print(f"  Checkpoints: {self.checkpoint_dir}")
+            print(f"{'='*50}")
+    
+    def _train_epoch_with_recovery(
+        self,
+        dataloader: torch.utils.data.DataLoader,
+        epoch: int,
+        save_every_batches: int,
+    ) -> dict[str, float]:
+        """Train one epoch with batch checkpointing."""
+        self.generator.train()
+        self.discriminator.train()
+        
+        epoch_losses = {}
+        
+        pbar = tqdm(dataloader, desc=f'Epoch {epoch}', leave=False)
+        for batch_idx, batch in enumerate(pbar):
+            if self._interrupted:
+                break
+            
+            losses = self.train_step(batch)
+            self.global_step += 1
+            
+            # Accumulate losses
+            for k, v in losses.items():
+                epoch_losses[k] = epoch_losses.get(k, 0) + v
+            
+            # Update progress bar
+            pbar.set_postfix({
+                'g': f"{losses['g_total']:.3f}",
+                'd': f"{losses['d_total']:.3f}",
+                'psnr': f"{losses['psnr']:.1f}",
+                'd_acc': f"{losses['d_acc']:.0%}",
+            })
+            
+            # Log to tensorboard
+            if self.global_step % 100 == 0:
+                for k, v in losses.items():
+                    self.writer.add_scalar(f'train/{k}', v, self.global_step)
+            
+            # Batch checkpoint
+            if save_every_batches > 0 and (batch_idx + 1) % save_every_batches == 0:
+                self._save_checkpoint(epoch)
+                pbar.write(f"  ✓ Batch checkpoint saved ({batch_idx + 1}/{len(dataloader)})")
+        
+        # Average losses
+        num_batches = batch_idx + 1 if batch_idx else len(dataloader)
+        for k in epoch_losses:
+            epoch_losses[k] /= num_batches
+        
+        return epoch_losses
 
 
 def main():
@@ -373,6 +525,11 @@ def main():
         help='Path to checkpoint to resume from',
     )
     parser.add_argument(
+        '--auto-resume',
+        action='store_true',
+        help='Automatically resume from latest checkpoint if exists',
+    )
+    parser.add_argument(
         '--data', '-d',
         type=str,
         required=True,
@@ -388,7 +545,16 @@ def main():
         print(f"Config not found: {args.config}, using defaults")
         config = {}
     
-    # Create dataloader
+    # Auto-resume: find latest checkpoint
+    resume_path = args.resume
+    if args.auto_resume and resume_path is None:
+        checkpoint_dir = Path(config.get('checkpoint_dir', 'checkpoints'))
+        latest_checkpoint = checkpoint_dir / 'checkpoint_latest.pt'
+        if latest_checkpoint.exists():
+            resume_path = str(latest_checkpoint)
+            print(f"Auto-resuming from: {resume_path}")
+    
+    # Create dataloader with optimizations
     dataloader = create_dataloader(
         root_dir=args.data,
         batch_size=config.get('batch_size', 8),
@@ -396,13 +562,17 @@ def main():
         crop_size=tuple(config.get('crop_size', [256, 256])),
     )
     
+    # Enable pin_memory for faster GPU transfer
+    dataloader.pin_memory = True
+    
     print(f"Dataset size: {len(dataloader.dataset)} triplets")
     print(f"Batches per epoch: {len(dataloader)}")
     
-    # Create trainer and train
-    trainer = Trainer(config, resume_from=args.resume)
-    trainer.train(dataloader)
+    # Create trainer and train with recovery
+    trainer = Trainer(config, resume_from=resume_path)
+    trainer.train_with_recovery(dataloader)
 
 
 if __name__ == '__main__':
     main()
+
