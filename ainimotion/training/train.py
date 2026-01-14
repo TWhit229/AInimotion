@@ -383,7 +383,7 @@ class Trainer:
         
         print(f"\n{'='*50}")
         print(f"Training started!")
-        print(f"  Epochs: {self.start_epoch} → {epochs-1}")
+        print(f"  Epochs: {self.start_epoch} -> {epochs-1}")
         print(f"  Batches/epoch: {len(dataloader)}")
         print(f"  Checkpoint saves: every {save_every_batches} batches + every epoch")
         print(f"  Press Ctrl+C to stop and save")
