@@ -26,5 +26,9 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/TWhit229/AInimotion"
 
-[tool.setuptools]
-packages = ["ainimotion"]
+[project.scripts]
+ainimotion = "ainimotion.cli.enhance:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ainimotion*"]

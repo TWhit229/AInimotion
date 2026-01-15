@@ -40,18 +40,18 @@ A practical guide from empty repo to working anime video enhancer.
 
 ---
 
-## Phase 1: Build the Pipeline Skeleton
+## Phase 1: Build the Pipeline Skeleton ✅ COMPLETE
 *Wire up the stages with placeholder logic*
 
 **Goal:** Input video → goes through all stages → output video (even if no processing happens yet)
 
 | Step | Task | Status |
 |------|------|--------|
-| 1.1 | **FFmpeg decode** — extract frames to temp dir or memory | [ ] |
-| 1.2 | **FFmpeg encode** — take frames and encode back to video + remux audio | [ ] |
-| 1.3 | **CLI entry point** — `ainimotion enhance input.mkv --out output.mkv` does round-trip | [ ] |
+| 1.1 | **FFmpeg decode** — extract frames to temp dir or memory | ✅ |
+| 1.2 | **FFmpeg encode** — take frames and encode back to video + remux audio | ✅ |
+| 1.3 | **CLI entry point** — `ainimotion enhance input.mkv --out output.mkv` does round-trip | ✅ |
 
-**Milestone:** CLI runs and produces a video output (just a copy, no enhancement yet).
+**Milestone:** ✅ CLI runs with `ainimotion enhance` and `ainimotion info` commands.
 
 ---
 
