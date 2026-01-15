@@ -28,6 +28,7 @@ class TripletDataset(Dataset):
         transform: Optional transform to apply to all frames
         augment: Whether to apply training augmentations (crop, flip, etc.)
         crop_size: Size of random crops during augmentation (H, W)
+        max_samples: Maximum number of triplets to use (None = use all)
     """
     
     def __init__(
@@ -36,6 +37,7 @@ class TripletDataset(Dataset):
         transform: Callable | None = None,
         augment: bool = True,
         crop_size: tuple[int, int] = (256, 256),
+        max_samples: int | None = None,
     ):
         self.root_dir = Path(root_dir)
         self.transform = transform
@@ -43,15 +45,24 @@ class TripletDataset(Dataset):
         self.crop_size = crop_size
         
         # Find all triplet directories (support both PNG and JPEG)
-        self.triplet_dirs = sorted([
+        all_triplet_dirs = sorted([
             d for d in self.root_dir.iterdir()
             if d.is_dir() and (
                 (d / "f1.png").exists() or (d / "f1.jpg").exists()
             )
         ])
         
-        if len(self.triplet_dirs) == 0:
+        if len(all_triplet_dirs) == 0:
             raise ValueError(f"No triplets found in {root_dir}")
+        
+        # Randomly sample if max_samples is set
+        if max_samples is not None and max_samples < len(all_triplet_dirs):
+            random.seed(42)  # Reproducible sampling
+            self.triplet_dirs = random.sample(all_triplet_dirs, max_samples)
+            self.triplet_dirs.sort()  # Keep sorted for consistency
+            print(f"Sampled {max_samples:,} triplets from {len(all_triplet_dirs):,} total")
+        else:
+            self.triplet_dirs = all_triplet_dirs
     
     def __len__(self) -> int:
         return len(self.triplet_dirs)
@@ -225,6 +236,9 @@ def create_dataloader(
     augment: bool = True,
     crop_size: tuple[int, int] = (256, 256),
     shuffle: bool = True,
+    prefetch_factor: int = 2,
+    persistent_workers: bool = False,
+    max_samples: int | None = None,
 ) -> torch.utils.data.DataLoader:
     """
     Create a DataLoader for training.
@@ -236,6 +250,9 @@ def create_dataloader(
         augment: Whether to apply augmentations
         crop_size: Size of random crops
         shuffle: Whether to shuffle data
+        prefetch_factor: Number of batches to prefetch per worker
+        persistent_workers: Keep workers alive between epochs (faster)
+        max_samples: Maximum number of triplets to use (None = use all)
         
     Returns:
         PyTorch DataLoader
@@ -244,6 +261,7 @@ def create_dataloader(
         root_dir=root_dir,
         augment=augment,
         crop_size=crop_size,
+        max_samples=max_samples,
     )
     
     return torch.utils.data.DataLoader(
@@ -253,4 +271,7 @@ def create_dataloader(
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None,
+        persistent_workers=persistent_workers and num_workers > 0,
     )
+

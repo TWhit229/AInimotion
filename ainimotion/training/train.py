@@ -554,16 +554,21 @@ def main():
             resume_path = str(latest_checkpoint)
             print(f"Auto-resuming from: {resume_path}")
     
+    # Enable cuDNN benchmark for faster training (finds optimal algorithms)
+    if config.get('cudnn_benchmark', True):
+        torch.backends.cudnn.benchmark = True
+        print("cuDNN benchmark enabled for optimal performance")
+    
     # Create dataloader with optimizations
     dataloader = create_dataloader(
         root_dir=args.data,
         batch_size=config.get('batch_size', 8),
         num_workers=config.get('num_workers', 4),
         crop_size=tuple(config.get('crop_size', [256, 256])),
+        prefetch_factor=config.get('prefetch_factor', 2),
+        persistent_workers=config.get('persistent_workers', False),
+        max_samples=config.get('max_samples', None),
     )
-    
-    # Enable pin_memory for faster GPU transfer
-    dataloader.pin_memory = True
     
     print(f"Dataset size: {len(dataloader.dataset)} triplets")
     print(f"Batches per epoch: {len(dataloader)}")
