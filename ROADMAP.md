@@ -55,17 +55,17 @@ A practical guide from empty repo to working anime video enhancer.
 
 ---
 
-## Phase 2: Add Gating (The "Anime-Safe" Core)
+## Phase 2: Add Gating (The "Anime-Safe" Core) ✅ COMPLETE
 *Detect scene cuts and holds BEFORE adding any ML*
 
 | Step | Task | Status |
 |------|------|--------|
-| 2.1 | **Frame comparison** — downscale + compute luma similarity (SSIM or MAD) | [ ] |
-| 2.2 | **Classify intervals** — cut / hold / motion based on thresholds | [ ] |
-| 2.3 | **Frame duplication** — for 24→48 FPS, duplicate frames for cuts/holds | [ ] |
-| 2.4 | **Unit tests** — test gating logic with synthetic frame pairs | [ ] |
+| 2.1 | **Frame comparison** — downscale + compute luma similarity (SSIM or MAD) | ✅ |
+| 2.2 | **Classify intervals** — cut / hold / motion based on thresholds | ✅ |
+| 2.3 | **Frame duplication** — for 24→48 FPS, duplicate frames for cuts/holds | ✅ |
+| 2.4 | **Unit tests** — test gating logic with synthetic frame pairs | ✅ |
 
-**Milestone:** Output is 48 FPS via intelligent duplication. No interpolation yet, but the gating logic is solid.
+**Milestone:** ✅ Gating module detects CUT/HOLD/MOTION. Ready for interpolation integration.
 
 ---
 
