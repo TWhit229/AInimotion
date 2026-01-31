@@ -1,0 +1,64 @@
+# LayeredInterpolator Fine-Tuning Configuration
+# ==============================================
+# Use this config after initial training to improve GAN balance.
+# Start from existing checkpoint with better adaptive settings.
+#
+# Usage: py -3.11 -m ainimotion.training.train --config configs/finetune_training.yaml --data "D:\Triplets" --auto-resume
+
+# Model Architecture (keep same as initial training)
+base_channels: 32
+kernel_size: 7
+grid_size: 8
+use_refinement: true
+
+# Discriminator
+disc_channels: 64
+
+# Training
+epochs: 50               # Additional epochs for fine-tuning
+batch_size: 12           # Maximum for 5070 Ti 16GB VRAM
+num_workers: 12
+crop_size: [256, 256]
+prefetch_factor: 4
+persistent_workers: true
+max_samples: 100000      # Same dataset subset
+
+# Learning rates - LOWER D rate for better balance
+lr_g: 0.00005            # Reduced from 0.0001
+lr_d: 0.00002            # Much lower than G to prevent D domination
+weight_decay: 0.01
+
+# Loss weights
+l1_weight: 1.0
+perceptual_weight: 0.1
+edge_weight: 0.5
+gan_weight: 0.05         # Increased from 0.01 for stronger GAN signal
+
+# GAN configuration
+gan_type: lsgan
+
+# === ADAPTIVE TRAINING FEATURES ===
+
+# Label smoothing - weakens discriminator by using soft labels
+label_smoothing: 0.1     # Real=0.9, Fake=0.1 instead of 1.0/0.0
+
+# Discriminator throttling - skip D updates when too strong
+d_throttle_threshold: 0.90   # Start throttling when d_acc > 90%
+d_throttle_patience: 50      # After 50 consecutive batches
+
+# Early stopping - stop if PSNR doesn't improve
+early_stop_patience: 10      # Stop if no improvement for 10 epochs
+min_psnr_delta: 0.2          # Minimum improvement to count
+
+# Mixed precision
+use_amp: true
+cudnn_benchmark: true
+
+# Logging and checkpointing
+log_dir: runs
+checkpoint_dir: checkpoints
+save_every: 1
+save_every_batches: 1000
+
+# Data
+data_dir: D:\Triplets

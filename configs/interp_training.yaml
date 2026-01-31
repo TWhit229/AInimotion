@@ -3,7 +3,7 @@
 # Optimized for RTX 5070 Ti (16GB VRAM)
 
 # Model Architecture
-base_channels: 32        # Base feature channels (doubled at each level)
+base_channels: 64        # Maximum capacity for quality
 kernel_size: 7           # AdaCoF kernel size (K×K)
 grid_size: 8             # Background affine grid size
 use_refinement: true     # Use refinement U-Net in compositor
@@ -13,17 +13,20 @@ disc_channels: 64        # Base discriminator channels
 
 # Training
 epochs: 30               # Reduced from 100 (most learning in early epochs)
-batch_size: 12           # Maximum for 5070 Ti 16GB VRAM (~14GB usage estimated)
+batch_size: 6            # Reduced for larger model (more VRAM needed)
 num_workers: 12          # High parallelism for fast data loading
 crop_size: [256, 256]    # Random crop size for training
 prefetch_factor: 4       # Prefetch batches per worker
 persistent_workers: true # Keep workers alive between epochs
-max_samples: 100000      # Limit dataset size for faster training (~3.5 days)
+max_samples: 100000      # Limit dataset size for faster training
 
 # Learning rates
 lr_g: 0.0001             # Generator learning rate
-lr_d: 0.0001             # Discriminator learning rate
+lr_d: 0.00005            # Lower D learning rate to prevent domination
 weight_decay: 0.01       # AdamW weight decay
+
+# Gradient clipping
+grad_clip: 1.0           # Clip gradients to prevent explosion (was inf)
 
 # Loss weights
 l1_weight: 1.0           # L1 reconstruction loss
@@ -42,7 +45,7 @@ cudnn_benchmark: true    # Enable cuDNN auto-tuner for faster training
 log_dir: runs
 checkpoint_dir: checkpoints
 save_every: 1            # Save checkpoint every epoch
-save_every_batches: 1000 # Also save every N batches (0 to disable)
+save_every_batches: 5000 # Save every N batches (increased for fewer saves)
 
 # Data
 data_dir: D:\Triplets    # Path to triplet dataset

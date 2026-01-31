@@ -1,0 +1,64 @@
+# LayeredInterpolator V2 Training Configuration
+# ==============================================
+# Combines larger model capacity + aggressive D weakening
+# This is a FRESH START (new architecture, can't resume old checkpoint)
+#
+# Usage: py -3.11 -m ainimotion.training.train --config configs/interp_v2_training.yaml --data "D:\Triplets"
+
+# Model Architecture - LARGER CAPACITY
+base_channels: 48            # Increased from 32 for more capacity
+kernel_size: 7
+grid_size: 8
+use_refinement: true
+
+# Discriminator
+disc_channels: 64
+
+# Training
+epochs: 50
+batch_size: 8                # Reduced due to larger model (more VRAM needed)
+num_workers: 12
+crop_size: [256, 256]
+prefetch_factor: 4
+persistent_workers: true
+max_samples: 100000
+
+# Learning rates - MUCH LOWER D rate
+lr_g: 0.0001
+lr_d: 0.00002               # 5x lower than G to prevent D domination
+weight_decay: 0.01
+
+# Loss weights
+l1_weight: 1.0
+perceptual_weight: 0.1
+edge_weight: 0.5
+gan_weight: 0.05             # Higher GAN weight for stronger adversarial signal
+
+# GAN configuration
+gan_type: lsgan
+
+# === AGGRESSIVE ADAPTIVE TRAINING ===
+
+# Stronger label smoothing
+label_smoothing: 0.15        # More smoothing to weaken D
+
+# More aggressive throttling
+d_throttle_threshold: 0.85   # Start throttling earlier
+d_throttle_patience: 30      # React faster
+
+# Early stopping
+early_stop_patience: 10
+min_psnr_delta: 0.2
+
+# Mixed precision
+use_amp: true
+cudnn_benchmark: true
+
+# Logging and checkpointing
+log_dir: runs
+checkpoint_dir: checkpoints_v2   # Separate checkpoint dir for new model
+save_every: 1
+save_every_batches: 1000
+
+# Data
+data_dir: D:\Triplets

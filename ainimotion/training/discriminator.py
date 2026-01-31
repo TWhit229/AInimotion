@@ -208,24 +208,54 @@ def gan_loss_hinge(
 
 class GANLoss(nn.Module):
     """
-    Configurable GAN loss.
+    Configurable GAN loss with label smoothing.
     
     Args:
         loss_type: 'vanilla', 'lsgan', or 'hinge'
+        label_smoothing: Amount to smooth labels (default 0.0, try 0.1)
+            - Real labels become 1.0 - smoothing (e.g., 0.9)
+            - Fake labels become 0.0 + smoothing (e.g., 0.1)
     """
     
-    def __init__(self, loss_type: str = 'lsgan'):
+    def __init__(self, loss_type: str = 'lsgan', label_smoothing: float = 0.0):
         super().__init__()
         self.loss_type = loss_type
+        self.label_smoothing = label_smoothing
         
-        if loss_type == 'vanilla':
-            self.loss_fn = gan_loss_vanilla
-        elif loss_type == 'lsgan':
-            self.loss_fn = gan_loss_lsgan
-        elif loss_type == 'hinge':
-            self.loss_fn = gan_loss_hinge
-        else:
+        if loss_type not in ('vanilla', 'lsgan', 'hinge'):
             raise ValueError(f"Unknown loss type: {loss_type}")
+    
+    def _get_target(self, pred: torch.Tensor, is_real: bool) -> torch.Tensor:
+        """Get target tensor with optional label smoothing."""
+        if is_real:
+            target_val = 1.0 - self.label_smoothing
+        else:
+            target_val = self.label_smoothing
+        return torch.full_like(pred, target_val)
+    
+    def _compute_loss(
+        self, 
+        pred: torch.Tensor, 
+        is_real: bool, 
+        for_discriminator: bool
+    ) -> torch.Tensor:
+        """Compute loss for a single prediction tensor."""
+        if self.loss_type == 'vanilla':
+            target = self._get_target(pred, is_real)
+            return nn.functional.binary_cross_entropy_with_logits(pred, target)
+        
+        elif self.loss_type == 'lsgan':
+            target = self._get_target(pred, is_real)
+            return nn.functional.mse_loss(pred, target)
+        
+        else:  # hinge
+            if for_discriminator:
+                if is_real:
+                    return torch.relu(1.0 - pred).mean()
+                else:
+                    return torch.relu(1.0 + pred).mean()
+            else:
+                return -pred.mean()
     
     def forward(
         self,
@@ -248,12 +278,8 @@ class GANLoss(nn.Module):
             # Multi-scale discriminator
             loss = 0.0
             for p in pred:
-                if self.loss_type == 'hinge':
-                    loss += self.loss_fn(p, is_real, for_discriminator)
-                else:
-                    loss += self.loss_fn(p, is_real)
+                loss += self._compute_loss(p, is_real, for_discriminator)
             return loss / len(pred)
         else:
-            if self.loss_type == 'hinge':
-                return self.loss_fn(pred, is_real, for_discriminator)
-            return self.loss_fn(pred, is_real)
+            return self._compute_loss(pred, is_real, for_discriminator)
+

@@ -1,0 +1,57 @@
+# Quick Probe Training Configuration
+# ===================================
+# Use this to test hyperparameters quickly (~30-45 min per run)
+# 
+# Usage: py -3.11 -m ainimotion.training.train --config configs/probe_training.yaml --data "D:\Triplets"
+
+# Model Architecture - Test with larger capacity
+base_channels: 48
+kernel_size: 7
+grid_size: 8
+use_refinement: true
+
+# Discriminator
+disc_channels: 64
+
+# Training - QUICK PROBE
+epochs: 3                    # Just 3 epochs to see trends
+batch_size: 8                # Smaller for larger model
+num_workers: 12
+crop_size: [256, 256]
+prefetch_factor: 4
+persistent_workers: true
+max_samples: 5000            # Only 5K samples for speed
+
+# Learning rates
+lr_g: 0.0001
+lr_d: 0.00002               # 5x lower than G
+
+# Loss weights
+l1_weight: 1.0
+perceptual_weight: 0.1
+edge_weight: 0.5
+gan_weight: 0.05
+
+# GAN configuration
+gan_type: lsgan
+
+# Adaptive training
+label_smoothing: 0.15
+d_throttle_threshold: 0.85
+d_throttle_patience: 20      # React faster for short runs
+
+# Disable early stopping for probe (we want all 3 epochs)
+early_stop_patience: 0
+
+# Mixed precision
+use_amp: true
+cudnn_benchmark: true
+
+# Logging - separate dirs for each probe
+log_dir: runs/probe
+checkpoint_dir: checkpoints/probe
+save_every: 1
+save_every_batches: 500
+
+# Data
+data_dir: D:\Triplets

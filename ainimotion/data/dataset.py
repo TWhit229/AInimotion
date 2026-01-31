@@ -38,11 +38,13 @@ class TripletDataset(Dataset):
         augment: bool = True,
         crop_size: tuple[int, int] = (256, 256),
         max_samples: int | None = None,
+        temporal_augment: bool = True,  # Swap frame1/frame3 for 2x data
     ):
         self.root_dir = Path(root_dir)
         self.transform = transform
         self.augment = augment
         self.crop_size = crop_size
+        self.temporal_augment = temporal_augment
         
         # Find all triplet directories (support both PNG and JPEG)
         all_triplet_dirs = sorted([
@@ -154,6 +156,11 @@ class TripletDataset(Dataset):
         # Apply augmentations
         if self.augment:
             f1, f2, f3 = self._apply_augmentation(f1, f2, f3)
+        
+        # Temporal augmentation: randomly swap frame1 and frame3
+        # This effectively 2x the training data since motion is bidirectional
+        if self.temporal_augment and random.random() > 0.5:
+            f1, f3 = f3, f1  # Swap! Middle frame (target) stays the same
         
         # Apply custom transform if provided
         if self.transform is not None:

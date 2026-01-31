@@ -73,10 +73,26 @@ class Trainer:
         ).to(self.device)
         
         self.gan_loss = GANLoss(
-            loss_type=config.get('gan_type', 'lsgan')
+            loss_type=config.get('gan_type', 'lsgan'),
+            label_smoothing=config.get('label_smoothing', 0.0),
         ).to(self.device)
         
         self.gan_weight = config.get('gan_weight', 0.01)
+        
+        # Adaptive training settings
+        self.d_throttle_threshold = config.get('d_throttle_threshold', 0.95)
+        self.d_throttle_patience = config.get('d_throttle_patience', 100)
+        self.d_throttle_counter = 0  # Consecutive batches with high d_acc
+        self.d_throttled = False  # Whether D updates are currently skipped
+        
+        # Gradient clipping
+        self.grad_clip = config.get('grad_clip', 0.0)  # 0 = disabled
+        
+        # Early stopping
+        self.early_stop_patience = config.get('early_stop_patience', 0)  # 0 = disabled
+        self.min_psnr_delta = config.get('min_psnr_delta', 0.1)
+        self.best_psnr = 0.0
+        self.epochs_without_improvement = 0
         
         # Optimizers
         self.optimizer_g = torch.optim.AdamW(
@@ -118,6 +134,7 @@ class Trainer:
         
         self.start_epoch = 0
         self.global_step = 0
+        self.start_batch = 0  # For batch-level resume
         
         # Resume if specified
         if resume_from:
@@ -134,16 +151,37 @@ class Trainer:
         self.scheduler_g.load_state_dict(checkpoint['scheduler_g'])
         self.scheduler_d.load_state_dict(checkpoint['scheduler_d'])
         self.scaler.load_state_dict(checkpoint['scaler'])
-        self.start_epoch = checkpoint['epoch'] + 1
-        self.global_step = checkpoint['global_step']
         
-        print(f"Resumed from epoch {self.start_epoch}")
+        # Calculate resume position
+        saved_epoch = checkpoint['epoch']
+        saved_global_step = checkpoint.get('global_step', 0)
+        batches_per_epoch = checkpoint.get('batches_per_epoch', 0)
+        
+        if batches_per_epoch > 0:
+            # Calculate which batch within epoch we were at
+            self.start_batch = saved_global_step % batches_per_epoch
+            if self.start_batch > 0:
+                # Resume mid-epoch
+                self.start_epoch = saved_epoch
+                print(f"Resumed from epoch {self.start_epoch}, batch {self.start_batch}")
+            else:
+                # Start fresh at next epoch
+                self.start_epoch = saved_epoch + 1
+                print(f"Resumed from epoch {self.start_epoch}")
+        else:
+            # Fallback for old checkpoints without batches_per_epoch
+            self.start_epoch = saved_epoch + 1
+            self.start_batch = 0
+            print(f"Resumed from epoch {self.start_epoch}")
+        
+        self.global_step = saved_global_step
     
     def _save_checkpoint(self, epoch: int, is_best: bool = False):
         """Save training checkpoint."""
         checkpoint = {
             'epoch': epoch,
             'global_step': self.global_step,
+            'batches_per_epoch': getattr(self, '_batches_per_epoch', 0),
             'generator': self.generator.state_dict(),
             'discriminator': self.discriminator.state_dict(),
             'optimizer_g': self.optimizer_g.state_dict(),
@@ -185,37 +223,81 @@ class Trainer:
         losses = {}
         
         # ============ Train Discriminator ============
-        self.optimizer_d.zero_grad()
+        # Check if we should throttle (skip) discriminator updates
+        skip_d_update = False
+        if self.d_throttle_threshold < 1.0:  # Throttling enabled
+            if self.d_throttled:
+                # Already throttling - skip D update
+                skip_d_update = True
         
-        with torch.amp.autocast('cuda', enabled=self.use_amp):
-            # Generate fake frame
+        if not skip_d_update:
+            self.optimizer_d.zero_grad()
+            
+            with torch.amp.autocast('cuda', enabled=self.use_amp):
+                # Generate fake frame
+                with torch.no_grad():
+                    output = self.generator(frame1, frame3)
+                    fake_frame = output['output']
+                
+                # Real loss
+                pred_real = self.discriminator(frame2)
+                loss_d_real = self.gan_loss(pred_real, is_real=True)
+                
+                # Fake loss
+                pred_fake = self.discriminator(fake_frame.detach())
+                loss_d_fake = self.gan_loss(pred_fake, is_real=False)
+                
+                loss_d = (loss_d_real + loss_d_fake) * 0.5
+            
+            self.scaler.scale(loss_d).backward()
+        
+            # Gradient clipping for discriminator
+            if self.grad_clip > 0:
+                self.scaler.unscale_(self.optimizer_d)
+                torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), self.grad_clip)
+            
+            self.scaler.step(self.optimizer_d)
+            
+            # Discriminator accuracy (how well it distinguishes real/fake)
+            with torch.no_grad():
+                d_acc_real = (pred_real.mean() > 0.5).float().item()
+                d_acc_fake = (pred_fake.mean() < 0.5).float().item()
+                d_acc = (d_acc_real + d_acc_fake) / 2
+            
+            losses['d_real'] = loss_d_real.item()
+            losses['d_fake'] = loss_d_fake.item()
+            losses['d_total'] = loss_d.item()
+            losses['d_acc'] = d_acc
+            
+            # Update throttle state
+            if d_acc >= self.d_throttle_threshold:
+                self.d_throttle_counter += 1
+                if self.d_throttle_counter >= self.d_throttle_patience:
+                    self.d_throttled = True
+                    self.d_throttle_counter = 0
+            else:
+                self.d_throttle_counter = 0
+                self.d_throttled = False
+        else:
+            # Skipping D update - still need to generate for G training
             with torch.no_grad():
                 output = self.generator(frame1, frame3)
                 fake_frame = output['output']
+                pred_real = self.discriminator(frame2)
+                pred_fake = self.discriminator(fake_frame)
+                d_acc_real = (pred_real.mean() > 0.5).float().item()
+                d_acc_fake = (pred_fake.mean() < 0.5).float().item()
+                d_acc = (d_acc_real + d_acc_fake) / 2
             
-            # Real loss
-            pred_real = self.discriminator(frame2)
-            loss_d_real = self.gan_loss(pred_real, is_real=True)
+            losses['d_real'] = 0.0
+            losses['d_fake'] = 0.0
+            losses['d_total'] = 0.0
+            losses['d_acc'] = d_acc
+            losses['d_throttled'] = 1.0
             
-            # Fake loss
-            pred_fake = self.discriminator(fake_frame.detach())
-            loss_d_fake = self.gan_loss(pred_fake, is_real=False)
-            
-            loss_d = (loss_d_real + loss_d_fake) * 0.5
-        
-        self.scaler.scale(loss_d).backward()
-        self.scaler.step(self.optimizer_d)
-        
-        # Discriminator accuracy (how well it distinguishes real/fake)
-        with torch.no_grad():
-            d_acc_real = (pred_real.mean() > 0.5).float().item()
-            d_acc_fake = (pred_fake.mean() < 0.5).float().item()
-            d_acc = (d_acc_real + d_acc_fake) / 2
-        
-        losses['d_real'] = loss_d_real.item()
-        losses['d_fake'] = loss_d_fake.item()
-        losses['d_total'] = loss_d.item()
-        losses['d_acc'] = d_acc
+            # Check if we should resume D training
+            if d_acc < self.d_throttle_threshold - 0.1:  # Hysteresis
+                self.d_throttled = False
         
         # ============ Train Generator ============
         self.optimizer_g.zero_grad()
@@ -241,12 +323,19 @@ class Trainer:
         
         self.scaler.scale(loss_g).backward()
         
-        # Compute gradient norm before stepping
+        # Unscale gradients for clipping and norm computation
+        self.scaler.unscale_(self.optimizer_g)
+        
+        # Compute gradient norm before clipping
         grad_norm_g = 0.0
         for p in self.generator.parameters():
             if p.grad is not None:
                 grad_norm_g += p.grad.data.norm(2).item() ** 2
         grad_norm_g = grad_norm_g ** 0.5
+        
+        # Gradient clipping for generator
+        if self.grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(self.generator.parameters(), self.grad_clip)
         
         self.scaler.step(self.optimizer_g)
         self.scaler.update()
@@ -430,16 +519,80 @@ class Trainer:
                 # Save epoch checkpoint
                 self._save_checkpoint(epoch)
                 print(f"  ✓ Checkpoint saved: epoch {epoch}")
+                
+                # Early stopping check based on PSNR
+                if self.early_stop_patience > 0 and 'psnr' in losses:
+                    current_psnr = losses['psnr']
+                    if current_psnr > self.best_psnr + self.min_psnr_delta:
+                        self.best_psnr = current_psnr
+                        self.epochs_without_improvement = 0
+                        print(f"  📈 New best PSNR: {self.best_psnr:.2f}")
+                    else:
+                        self.epochs_without_improvement += 1
+                        print(f"  ⏳ No PSNR improvement for {self.epochs_without_improvement}/{self.early_stop_patience} epochs")
+                        
+                        if self.epochs_without_improvement >= self.early_stop_patience:
+                            print(f"\n⏹️  Early stopping: PSNR hasn't improved for {self.early_stop_patience} epochs")
+                            print(f"   Best PSNR: {self.best_psnr:.2f}")
+                            break
         
         except RuntimeError as e:
-            if "out of memory" in str(e).lower():
-                print(f"\n❌ CUDA Out of Memory! Saving checkpoint...")
-                self._save_checkpoint(epoch, is_best=False)
-                print(f"💡 Try reducing batch_size in config")
-                raise
+            if "out of memory" in str(e).lower() or "CUDA" in str(e):
+                self._oom_retry_count = getattr(self, '_oom_retry_count', 0) + 1
+                max_retries = self.config.get('oom_max_retries', 3)
+                
+                if self._oom_retry_count <= max_retries:
+                    print(f"\n⚠️  CUDA Error detected! Attempt {self._oom_retry_count}/{max_retries}")
+                    print(f"   Saving checkpoint and clearing GPU memory...")
+                    
+                    # Try to save checkpoint
+                    try:
+                        self._save_checkpoint(epoch if 'epoch' in dir() else self.start_epoch, is_best=False)
+                        print(f"   ✓ Checkpoint saved")
+                    except Exception as save_error:
+                        print(f"   ⚠️ Could not save checkpoint: {save_error}")
+                    
+                    # Clear GPU memory
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                    
+                    # Wait for GPU to stabilize
+                    import time
+                    wait_time = 10 * self._oom_retry_count  # 10s, 20s, 30s
+                    print(f"   Waiting {wait_time}s for GPU to stabilize...")
+                    time.sleep(wait_time)
+                    
+                    # Log memory status
+                    if torch.cuda.is_available():
+                        mem_allocated = torch.cuda.memory_allocated() / 1024**3
+                        mem_reserved = torch.cuda.memory_reserved() / 1024**3
+                        print(f"   GPU Memory: {mem_allocated:.2f}GB allocated, {mem_reserved:.2f}GB reserved")
+                    
+                    print(f"   🔄 Auto-resuming training...")
+                    
+                    # Reload from checkpoint and retry
+                    checkpoint_path = self.checkpoint_dir / "checkpoint_latest.pt"
+                    if checkpoint_path.exists():
+                        self._load_checkpoint(str(checkpoint_path))
+                        # Recursive call with fresh state
+                        return self.train_with_recovery(dataloader)
+                    else:
+                        print(f"   ❌ No checkpoint found to resume from")
+                        raise
+                else:
+                    print(f"\n❌ CUDA Error after {max_retries} retries. Saving and exiting...")
+                    try:
+                        self._save_checkpoint(epoch if 'epoch' in dir() else self.start_epoch, is_best=False)
+                    except:
+                        pass
+                    print(f"💡 Try reducing batch_size in config or restart your computer")
+                    raise
             else:
                 print(f"\n❌ Error: {e}")
-                self._save_checkpoint(epoch, is_best=False)
+                try:
+                    self._save_checkpoint(epoch if 'epoch' in dir() else self.start_epoch, is_best=False)
+                except:
+                    pass
                 raise
         
         finally:
@@ -467,30 +620,115 @@ class Trainer:
         save_every_batches: int,
     ) -> dict[str, float]:
         """Train one epoch with batch checkpointing."""
+        import time
+        
         self.generator.train()
         self.discriminator.train()
         
-        epoch_losses = {}
+        # Store batches_per_epoch for checkpoint resume
+        self._batches_per_epoch = len(dataloader)
+        total_batches = len(dataloader)
         
-        pbar = tqdm(dataloader, desc=f'Epoch {epoch}', leave=False)
+        epoch_losses = {}
+        batches_processed = 0
+        
+        # Running averages for smoother display
+        running_psnr = []
+        running_g_loss = []
+        running_d_loss = []
+        avg_window = 100  # Average over last 100 batches
+        
+        # Timing
+        epoch_start_time = time.time()
+        batch_times = []
+        
+        # Calculate how many batches to skip on resume (first epoch only)
+        skip_batches = 0
+        if epoch == self.start_epoch and self.start_batch > 0:
+            skip_batches = self.start_batch
+            print(f"  ⏩ Skipping first {skip_batches} batches (already processed)")
+        
+        # Calculate total epochs for overall progress
+        total_epochs = self.config.get('epochs', 100)
+        epochs_done = epoch - self.start_epoch
+        epochs_remaining = total_epochs - epoch - 1
+        
+        pbar = tqdm(
+            dataloader, 
+            desc=f'Epoch {epoch}/{total_epochs-1}',
+            leave=False,
+            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}'
+        )
+        
         for batch_idx, batch in enumerate(pbar):
             if self._interrupted:
                 break
             
+            # Skip already-processed batches on resume
+            if batch_idx < skip_batches:
+                if batch_idx % 1000 == 0:
+                    pbar.set_postfix_str(f'⏩ Skipping {batch_idx}/{skip_batches}')
+                continue
+            
+            batch_start = time.time()
             losses = self.train_step(batch)
+            batch_time = time.time() - batch_start
+            batch_times.append(batch_time)
+            
             self.global_step += 1
+            batches_processed += 1
             
             # Accumulate losses
             for k, v in losses.items():
                 epoch_losses[k] = epoch_losses.get(k, 0) + v
             
-            # Update progress bar
-            pbar.set_postfix({
-                'g': f"{losses['g_total']:.3f}",
-                'd': f"{losses['d_total']:.3f}",
-                'psnr': f"{losses['psnr']:.1f}",
-                'd_acc': f"{losses['d_acc']:.0%}",
-            })
+            # Update running averages
+            running_psnr.append(losses['psnr'])
+            running_g_loss.append(losses['g_total'])
+            running_d_loss.append(losses['d_total'])
+            if len(running_psnr) > avg_window:
+                running_psnr.pop(0)
+                running_g_loss.pop(0)
+                running_d_loss.pop(0)
+            
+            avg_psnr = sum(running_psnr) / len(running_psnr)
+            avg_g = sum(running_g_loss) / len(running_g_loss)
+            avg_d = sum(running_d_loss) / len(running_d_loss)
+            
+            # Calculate ETA
+            avg_batch_time = sum(batch_times[-100:]) / len(batch_times[-100:])
+            remaining_batches = total_batches - batch_idx - 1
+            eta_epoch_sec = remaining_batches * avg_batch_time
+            eta_total_sec = eta_epoch_sec + (epochs_remaining * total_batches * avg_batch_time)
+            
+            # Format ETA
+            def format_time(seconds):
+                if seconds < 60:
+                    return f"{seconds:.0f}s"
+                elif seconds < 3600:
+                    return f"{seconds/60:.0f}m"
+                else:
+                    hours = seconds // 3600
+                    mins = (seconds % 3600) // 60
+                    return f"{hours:.0f}h{mins:.0f}m"
+            
+            # Get GPU memory
+            if torch.cuda.is_available():
+                mem_gb = torch.cuda.memory_allocated() / 1024**3
+                mem_str = f"{mem_gb:.1f}GB"
+            else:
+                mem_str = "N/A"
+            
+            # Samples per second
+            samples_per_sec = self.config.get('batch_size', 1) / avg_batch_time
+            
+            # Build detailed progress string
+            pbar.set_postfix_str(
+                f"PSNR:{avg_psnr:.1f} │ G:{avg_g:.3f} D:{avg_d:.3f} │ "
+                f"d_acc:{losses['d_acc']:.0%} │ grad:{losses.get('grad_norm', 0):.1f} │ "
+                f"GPU:{mem_str} │ {samples_per_sec:.1f}samp/s │ "
+                f"ETA:{format_time(eta_epoch_sec)}(ep)/{format_time(eta_total_sec)}(tot)"
+            )
             
             # Log to tensorboard
             if self.global_step % 100 == 0:
@@ -500,12 +738,20 @@ class Trainer:
             # Batch checkpoint
             if save_every_batches > 0 and (batch_idx + 1) % save_every_batches == 0:
                 self._save_checkpoint(epoch)
-                pbar.write(f"  ✓ Batch checkpoint saved ({batch_idx + 1}/{len(dataloader)})")
+                pbar.write(f"  ✓ Batch checkpoint saved ({batch_idx + 1}/{total_batches})")
         
-        # Average losses
-        num_batches = batch_idx + 1 if batch_idx else len(dataloader)
-        for k in epoch_losses:
-            epoch_losses[k] /= num_batches
+        # Average losses (use actual batches processed, not total)
+        if batches_processed > 0:
+            for k in epoch_losses:
+                epoch_losses[k] /= batches_processed
+        
+        # Print epoch summary with timing
+        epoch_time = time.time() - epoch_start_time
+        print(f"\n  ⏱️  Epoch time: {epoch_time/60:.1f} min ({batches_processed} batches)")
+        
+        # Clear start_batch after first resume epoch
+        if skip_batches > 0:
+            self.start_batch = 0
         
         return epoch_losses
 
