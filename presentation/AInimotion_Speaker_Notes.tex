@@ -163,14 +163,14 @@ The dataset is categorized by motion difficulty: small, medium, and large motion
 \begin{codebox}
 \textbf{Training setup details:}
 \begin{itemize}[leftmargin=*]
-    \item We train on \textbf{random $256 \times 256$ crops}, not full resolution. This saves VRAM and adds data augmentation.
+    \item We train on \textbf{random $384 \times 384$ crops}, not full resolution. This saves VRAM and adds data augmentation.
     \item \textbf{Horizontal, vertical, and temporal flips} further augment the data. Temporal flip means swapping $I_1 \leftrightarrow I_3$, which forces the model to learn symmetric interpolation.
     \item \textbf{100K samples per epoch} means the dataloader randomly re-crops 100,000 times per epoch, so the model sees different parts of each image each time.
 \end{itemize}
 \end{codebox}
 
 \begin{saybox}
-``I train on ATD-12K, the standard anime VFI benchmark. It has 12,000 frame triplets from 30 anime films, categorized by motion difficulty. I use 256-by-256 random crops with horizontal, vertical, and temporal flips for augmentation, drawing 100,000 samples per epoch.''
+``I train on ATD-12K, the standard anime VFI benchmark. It has 12,000 frame triplets from 30 anime films, categorized by motion difficulty. I use 384-by-384 random crops with horizontal, vertical, and temporal flips for augmentation, drawing 100,000 samples per epoch.''
 \end{saybox}
 
 % ------ SLIDE 5 ------
@@ -239,24 +239,24 @@ These 6 numbers $(a, b, t_x, c, d, t_y)$ control everything:
 
 \textbf{5. Foreground Flow (AdaCoF Kernels):}
 \begin{itemize}[leftmargin=*]
-    \item For \textit{every pixel} in the output, predicts a $7 \times 7$ kernel with:
+    \item For \textit{every pixel} in the output, predicts a $9 \times 9$ kernel with:
     \begin{itemize}
-        \item $7 \times 7 = 49$ sampling offset pairs $(dx, dy)$: where to look in the input
-        \item $49$ weights: how much to use each sample (softmax-normalized)
+        \item $9 \times 9 = 81$ sampling offset pairs $(dx, dy)$: where to look in the input
+        \item $81$ weights: how much to use each sample (softmax-normalized)
     \end{itemize}
-    \item Total: $49 \times 2 + 49 = 147$ parameters per pixel.
-    \item This is extremely flexible --- each pixel can gather information from 49 different locations in either input frame, at non-integer positions (using bilinear sampling).
+    \item Total: $81 \times 2 + 81 = 243$ parameters per pixel.
+    \item This is extremely flexible --- each pixel can gather information from 81 different locations in either input frame, at non-integer positions (using bilinear sampling).
     \item This handles non-linear character motion: squash, stretch, rotation, non-rigid deformation.
     \item Samples from \textit{both} frame 1 and frame 2, then averages.
 \end{itemize}
 
-\textbf{Breaking down ``49 weights + 98 offsets = 147 params/pixel'':}
+\textbf{Breaking down ``81 weights + 162 offsets = 243 params/pixel'':}
 \begin{itemize}[leftmargin=*]
-    \item Think of each output pixel as having its own $7 \times 7$ ``grabber grid.''
-    \item \textbf{98 offsets} = $49$ positions in the grid $\times$ 2 (one for $dx$, one for $dy$). These tell the network: ``for position \#17 in my grid, reach $3.2$ pixels left and $1.7$ pixels up in the input image.'' The offsets are continuous (not integer), so we use bilinear interpolation to sample at fractional positions.
-    \item \textbf{49 weights} = one weight per grid position, softmax-normalized (so they sum to 1). These tell the network: ``position \#17 gets 12\% of the total influence, position \#23 gets 25\%'', etc. The softmax ensures the final pixel value is a valid weighted average, not some arbitrary sum.
-    \item \textbf{Total}: Each output pixel gathers 49 samples from the input, each at a learned location, and combines them with learned weights. This is powerful enough to handle any local deformation: rotation, stretch, squash, or even partially transparent overlaps.
-    \item \textbf{Initialized to a regular grid:} At the start of training, the offsets form a uniform $7 \times 7$ grid centered on each pixel, and all weights are equal ($\frac{1}{49}$). This means the initial output is just a box-filtered average of the neighborhood --- a blurry but safe starting point. Training then learns to specialize each kernel.
+    \item Think of each output pixel as having its own $9 \times 9$ ``grabber grid.''
+    \item \textbf{162 offsets} = $81$ positions in the grid $\times$ 2 (one for $dx$, one for $dy$). These tell the network: ``for position \#17 in my grid, reach $3.2$ pixels left and $1.7$ pixels up in the input image.'' The offsets are continuous (not integer), so we use bilinear interpolation to sample at fractional positions.
+    \item \textbf{81 weights} = one weight per grid position, softmax-normalized (so they sum to 1). These tell the network: ``position \#17 gets 12\% of the total influence, position \#23 gets 25\%'', etc. The softmax ensures the final pixel value is a valid weighted average, not some arbitrary sum.
+    \item \textbf{Total}: Each output pixel gathers 81 samples from the input, each at a learned location, and combines them with learned weights. This is powerful enough to handle any local deformation: rotation, stretch, squash, or even partially transparent overlaps.
+    \item \textbf{Initialized to a regular grid:} At the start of training, the offsets form a uniform $9 \times 9$ grid centered on each pixel, and all weights are equal ($\frac{1}{81}$). This means the initial output is just a box-filtered average of the neighborhood --- a blurry but safe starting point. Training then learns to specialize each kernel.
 \end{itemize}
 \end{conceptbox}
 
@@ -443,7 +443,7 @@ In anime VFI specifically, the discriminator tends to dominate because anime fra
 \begin{enumerate}[leftmargin=*]
     \item \textbf{D Warmup (500 batches):} Already discussed.
     
-    \item \textbf{Patch Discriminator:} Instead of classifying the entire $256 \times 256$ image as ``real'' or ``fake'', the discriminator classifies $70 \times 70$ overlapping patches. This focuses on local texture quality (``are these ink lines crisp?'') rather than global structure (``is this globally realistic?''). It's more stable and provides better gradient flow.
+    \item \textbf{Patch Discriminator:} Instead of classifying the entire $384 \times 384$ image as ``real'' or ``fake'', the discriminator classifies $70 \times 70$ overlapping patches. This focuses on local texture quality (``are these ink lines crisp?'') rather than global structure (``is this globally realistic?''). It's more stable and provides better gradient flow.
     
     \item \textbf{LSGAN (Least Squares GAN):} Instead of binary cross-entropy (real/fake), we use mean squared error against target values of 0 and 1. Gradients are smoother and training is more stable. From Mao et al., ICCV 2017.
     
@@ -502,11 +502,11 @@ For infrastructure, we use mixed precision, gradient clipping, OOM recovery, and
 \subsection{Slide 9: Design Evolution \& Training Progress}
 
 \begin{saybox}
-``This table shows how the model evolved through experimentation. I started with 32 base channels and scaled to 96 --- three times larger --- which significantly improved quality. GAN training originally started from epoch 0, which was unstable, so I moved to the two-phase approach. I doubled the L1 weight from 1.0 to 2.0 to prioritize PSNR. The edge multiplier went from 10x to 20x for sharper ink lines. And I reduced the discriminator learning rate and added the 1:2 update ratio to prevent it from overpowering the generator.
+``This table shows how the model evolved through experimentation. I started with 32 base channels and scaled to 96 --- three times larger --- which significantly improved quality. The kernel size went from 7 to 9 based on our hyperparameter sweep. GAN training originally started from epoch 0, which was unstable, so I moved to the two-phase approach. The L1 weight and perceptual weight were optimized through a 13-experiment sweep. The edge multiplier went from 10x to 20x for sharper ink lines. And I reduced the discriminator learning rate and added the 1:2 update ratio to prevent it from overpowering the generator.
 
 On the right, you can see how my targets compare to existing methods. RIFE achieves around 25 to 27 dB PSNR on ATD-12K --- it's fast but blurs large motion. AnimeInterp, the previous anime-specific method, reaches 27 to 29 dB. My target for Phase 1 is at least 28 dB, which would be competitive with AnimeInterp but without requiring an external segmentation network.
 
-In the first 10 epochs, PSNR went from 20.7 to 22.1 dB, and gradients remained stable throughout.''
+The hyperparameter sweep across 13 configurations found that larger crops (384 vs 256), K=9 kernels, and higher perceptual weight all contributed to improved PSNR, with the best configuration reaching 21.80 dB at just 5 epochs.''
 \end{saybox}
 
 % ------ SLIDE 10 ------
@@ -515,7 +515,7 @@ In the first 10 epochs, PSNR went from 20.7 to 22.1 dB, and gradients remained s
 \begin{saybox}
 ``To summarize: I built a LayeredInterpolator that separates background and foreground motion --- the first VFI architecture to do so. I designed anime-specific edge-aware losses, a stable two-phase training strategy, and robust training infrastructure.
 
-Next steps are completing Phase 1 training through all 35 epochs, doing a hyperparameter sweep specifically for heavy-motion scenes, evaluating Phase 2 GAN fine-tuning, and then comparing against RIFE and AnimeInterp baselines on the ATD-12K test set.
+Next steps are completing the full 50-epoch training run with the sweep-optimized configuration, evaluating Phase 2 GAN fine-tuning, and then comparing against RIFE and AnimeInterp baselines on the ATD-12K test set.''
 
 The project is open source at github.com/TWhit229/AInimotion.''
 \end{saybox}
@@ -575,7 +575,7 @@ For each output pixel, predict $K^2$ sampling locations (offsets from the pixel 
 \text{output}(x, y) = \sum_{i=1}^{K^2} w_i \cdot \text{input}(x + \Delta x_i, y + \Delta y_i)
 \]
 
-With $K=7$, that's 49 sampling points per pixel. The model can learn to:
+With $K=9$, that's 81 sampling points per pixel. The model can learn to:
 \begin{itemize}
     \item Gather from a single location (like flow): set one weight to 1, others to 0
     \item Blend from multiple locations (for motion blur or uncertainty)
@@ -588,7 +588,7 @@ With $K=7$, that's 49 sampling points per pixel. The model can learn to:
 
 A PatchGAN (Isola et al., 2017) classifies overlapping patches rather than the full image. With 3 downsampling layers of stride-2 4$\times$4 convolutions, each output value has a receptive field of $70 \times 70$ pixels.
 
-The discriminator output is a spatial map (e.g., $30 \times 30$ for a $256 \times 256$ input), where each value says ``is this $70 \times 70$ region real or fake?'' The loss is averaged over all patches.
+The discriminator output is a spatial map (e.g., $46 \times 46$ for a $384 \times 384$ input), where each value says ``is this $70 \times 70$ region real or fake?'' The loss is averaged over all patches.
 
 This encourages local texture fidelity (crisp lines, correct color gradients) without forcing global consistency that might conflict with the generator's reconstruction loss.
 
@@ -850,7 +850,7 @@ This section defines foundational terms used throughout the document. If you enc
 
 \subsection*{Training Concepts}
 
-\textbf{Data Augmentation:} Artificially increasing dataset diversity by applying random transformations to training images. We use: (1) \textbf{Random crops} --- cutting $256 \times 256$ patches from random positions, (2) \textbf{Horizontal flip} --- mirroring left/right, (3) \textbf{Vertical flip} --- mirroring top/bottom, (4) \textbf{Temporal flip} --- swapping $I_1 \leftrightarrow I_3$ so the model learns interpolation in both directions.
+\textbf{Data Augmentation:} Artificially increasing dataset diversity by applying random transformations to training images. We use: (1) \textbf{Random crops} --- cutting $384 \times 384$ patches from random positions, (2) \textbf{Horizontal flip} --- mirroring left/right, (3) \textbf{Vertical flip} --- mirroring top/bottom, (4) \textbf{Temporal flip} --- swapping $I_1 \leftrightarrow I_3$ so the model learns interpolation in both directions.
 
 \textbf{Mode Collapse:} A GAN failure mode where the generator learns to produce only one or a few ``safe'' outputs that fool the discriminator, ignoring the diversity of real data. All generated frames might start looking identical. Our stabilization techniques (low GAN weight, D warmup, label smoothing) prevent this.
 

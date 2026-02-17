@@ -141,7 +141,7 @@ LDMVFI \cite{danier2023ldmvfi} & Latent diffusion & 100$\times$ slower \\
 \vspace{0.2cm}
 \textbf{Training setup:}
 \begin{itemize}
-    \item Random $256 \times 256$ crops
+    \item Random $384 \times 384$ crops
     \item Horizontal/vertical/temporal flips
     \item 100K samples per epoch
 \end{itemize}
@@ -223,7 +223,7 @@ $(I_1, I_2, I_3)$: $I_2$ is ground truth used as supervision during training.
     \item \textbf{FPN:} Shared encoder, 4 scales ($\frac{1}{2}$ to $\frac{1}{16}$) + \textbf{correlation volumes} (per-pixel dot-product similarity over a $9{\times}9$ search window between frames --- tells the network ``where did each pixel move?'')
     \item \textbf{Scene Gate:} Detects hard cuts via correlation statistics, bypasses interpolation
     \item \textbf{Background:} $8\times8$ quasi-rigid affine grid for camera pans/zooms
-    \item \textbf{Foreground (AdaCoF):} $7\times7$ deformable sampling kernels per pixel (49 weights + 98 offsets = 147 params/pixel)
+    \item \textbf{Foreground (AdaCoF):} $9\times9$ deformable sampling kernels per pixel (81 weights + 162 offsets = 243 params/pixel)
     \item \textbf{Compositor:} Learned soft $\alpha$ mask + refinement U-Net
 \end{itemize}
 \end{column}
@@ -231,7 +231,7 @@ $(I_1, I_2, I_3)$: $I_2$ is ground truth used as supervision during training.
 \textbf{Generator Loss:}
 \footnotesize
 \[
-\mathcal{L}_G = \underbrace{2.0 \cdot \mathcal{L}_{L1}}_{\text{Reconstruction}} + \underbrace{0.05 \cdot \mathcal{L}_{\text{perc}}}_{\text{VGG19}} + \underbrace{1.0 \cdot \mathcal{L}_{\text{edge}}}_{\text{Ink Lines}} + \underbrace{0.005 \cdot \mathcal{L}_{\text{GAN}}}_{\text{Phase 2}}
+\mathcal{L}_G = \underbrace{1.5 \cdot \mathcal{L}_{L1}}_{\text{Reconstruction}} + \underbrace{0.1 \cdot \mathcal{L}_{\text{perc}}}_{\text{VGG19}} + \underbrace{1.0 \cdot \mathcal{L}_{\text{edge}}}_{\text{Ink Lines}} + \underbrace{0.005 \cdot \mathcal{L}_{\text{GAN}}}_{\text{Phase 2}}
 \]
 \normalsize
 
@@ -257,7 +257,7 @@ $(I_1, I_2, I_3)$: $I_2$ is ground truth used as supervision during training.
 \begin{block}{\centering Phase 1: Reconstruction (Ep 0--34)}
 \begin{itemize}\setlength\itemsep{2pt}
     \item Generator only --- no adversarial loss
-    \item $\text{lr}_G = 2 \times 10^{-4}$
+    \item $\text{lr}_G = 3 \times 10^{-4}$
     \item Loss: $\mathcal{L}_{L1} + \mathcal{L}_{\text{perc}} + \mathcal{L}_{\text{edge}}$
     \item \textbf{Goal:} PSNR $\geq$ 28 dB
 \end{itemize}
@@ -343,8 +343,9 @@ W\&B logging. RTX 5090 (32~GB VRAM).
 \textbf{Component} & \textbf{Initial} & \textbf{Final} \\
 \midrule
 Base Channels & 32 & 96 ($3\times$) \\
+Kernel Size & 7 & 9 (sweep winner) \\
 GAN Training & From epoch 0 & Two-phase (ep 35) \\
-L1 Weight & 1.0 & 2.0 (PSNR focus) \\
+L1 Weight & 1.0 & 1.5 (sweep-optimized) \\
 GAN Weight & 0.01 & 0.005 (gentler) \\
 Edge Multiplier & $10\times$ & $20\times$ (sharper) \\
 Disc.\ LR & $10^{-4}$ & $2\times10^{-5}$ \\
@@ -372,9 +373,10 @@ AnimeInterp & $\sim$27--29 dB & $\sim$0.88 \\
 \normalsize
 
 \vspace{0.15cm}
-\textbf{Early Results (Epochs 0--9):}
+\textbf{Sweep Results (13 experiments):}
 \begin{itemize}
-    \item PSNR: $20.7 \rightarrow 22.1$ dB (rising)
+    \item Best: \textbf{21.80 dB} (K=9, crop 384, perc=0.1)
+    \item Crop 384 alone: +0.74 dB over 256
     \item Gradients stable ($\sim 0.2$--$0.5$)
 \end{itemize}
 
@@ -405,8 +407,7 @@ Phase 2: + perceptual sharpness via GAN
 \begin{column}{0.48\textwidth}
 \textbf{Next steps:}
 \begin{itemize}
-    \item Complete Phase 1 training (35 epochs)
-    \item Hyperparameter sweep for heavy motion
+    \item Complete full 50-epoch training run
     \item Evaluate Phase 2 GAN fine-tuning
     \item Qualitative evaluation on test set
     \item Compare with RIFE, AnimeInterp baselines
