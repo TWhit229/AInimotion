@@ -235,19 +235,30 @@ class Trainer:
                 print(f"\n[!]  Architecture mismatch detected in checkpoint!")
                 print(f"     (likely kernel_size or base_channels changed)")
                 print(f"     Loading compatible weights only; mismatched layers re-initialized.")
+                # strict=False only handles missing/extra keys, NOT size mismatches.
+                # We must manually filter out keys with incompatible shapes.
+                def _filter_compatible(model, ckpt_state):
+                    """Return only checkpoint keys whose shapes match the model."""
+                    model_state = model.state_dict()
+                    compatible = {}
+                    skipped = []
+                    for k, v in ckpt_state.items():
+                        if k in model_state and v.shape == model_state[k].shape:
+                            compatible[k] = v
+                        else:
+                            skipped.append(k)
+                    return compatible, skipped
                 
-                # Load generator with strict=False
-                missing_g, unexpected_g = self.generator.load_state_dict(
-                    checkpoint['generator'], strict=False
-                )
-                missing_d, unexpected_d = self.discriminator.load_state_dict(
-                    checkpoint['discriminator'], strict=False
-                )
+                compat_g, skip_g = _filter_compatible(self.generator, checkpoint['generator'])
+                compat_d, skip_d = _filter_compatible(self.discriminator, checkpoint['discriminator'])
                 
-                skipped = len(missing_g) + len(unexpected_g)
-                print(f"     Generator:     {skipped} keys skipped/mismatched")
-                skipped_d = len(missing_d) + len(unexpected_d)
-                print(f"     Discriminator: {skipped_d} keys skipped/mismatched")
+                self.generator.load_state_dict(compat_g, strict=False)
+                self.discriminator.load_state_dict(compat_d, strict=False)
+                
+                print(f"     Generator:     {len(compat_g)} loaded, {len(skip_g)} skipped")
+                if skip_g:
+                    print(f"       Skipped: {', '.join(skip_g[:5])}{'...' if len(skip_g) > 5 else ''}")
+                print(f"     Discriminator: {len(compat_d)} loaded, {len(skip_d)} skipped")
                 print(f"     Starting training from epoch 0 (fresh optimizers)\n")
                 
                 # Don't load optimizer/scheduler states — they won't match
