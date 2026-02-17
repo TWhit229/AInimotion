@@ -1,10 +1,10 @@
 # LayeredInterpolator Training Configuration
 # ============================================
-# Optimized for RTX 5070 Ti (16GB VRAM)
+# Optimized for RTX 5090 (32GB VRAM)
 
 # Model Architecture
-base_channels: 64        # Maximum capacity for best quality
-kernel_size: 7           # AdaCoF kernel size (K×K)
+base_channels: 96        # Maximum capacity for 32GB VRAM
+kernel_size: 9           # AdaCoF kernel size (K×K) — sweep winner: K=9 > K=7
 grid_size: 8             # Background affine grid size
 use_refinement: true     # Use refinement U-Net in compositor
 
@@ -13,15 +13,15 @@ disc_channels: 64        # Base discriminator channels
 
 # Training
 epochs: 50               # Extended for better quality
-batch_size: 4            # Smaller batch for 64ch model
+batch_size: 6            # Sweep winner (384 crops need smaller batch)
 num_workers: 12          # High parallelism for fast data loading
-crop_size: [256, 256]    # Random crop size for training
+crop_size: [384, 384]    # Sweep winner: +0.7 dB PSNR over 256 crops
 prefetch_factor: 4       # Prefetch batches per worker
 persistent_workers: true # Keep workers alive between epochs
 max_samples: 100000      # Limit dataset size for faster training
 
 # Learning rates
-lr_g: 0.0001             # Generator learning rate
+lr_g: 0.0003             # Sweep winner: lr=3e-4 slightly beat 2e-4
 lr_d: 0.00002            # Much slower D to prevent domination
 weight_decay: 0.01       # AdamW weight decay
 
@@ -29,16 +29,22 @@ weight_decay: 0.01       # AdamW weight decay
 grad_clip: 1.0           # Clip gradients to prevent explosion (was inf)
 
 # Loss weights
-l1_weight: 2.0           # Increased for better PSNR (was 1.0)
-perceptual_weight: 0.05  # Reduced to let L1 drive PSNR higher (was 0.1)
+l1_weight: 1.5           # Sweep winner: balanced with perceptual (was 2.0)
+perceptual_weight: 0.1   # Sweep winner: higher perceptual actually helps PSNR (was 0.05)
 edge_weight: 1.0         # Edge-weighted L1 loss (doubled for sharper edges)
 edge_multiplier: 20.0    # Edge pixel weight (doubled from 10)
-gan_weight: 0.01         # Adversarial loss weight
+gan_weight: 0.005        # Lower GAN weight for Phase 2 fine-tuning
 
 # GAN configuration
+gan_start_epoch: 35      # No GAN for epochs 0-34, enable at epoch 35
 gan_type: lsgan          # 'vanilla', 'lsgan', or 'hinge'
 label_smoothing: 0.1     # Makes D's task harder (prevents overconfidence)
 d_update_ratio: 2        # Update D every N batches (G trains more often)
+lr_g_phase2: 0.00005     # Lower lr_g when GAN activates for stable fine-tuning
+
+# Phase 2 VRAM management (gradient accumulation)
+phase2_batch_size: 3     # Physical batch during Phase 2 (discriminator needs VRAM)
+gradient_accumulation_steps: 2  # Accumulate 2 mini-batches → effective batch = 6
 
 # Mixed precision
 use_amp: true            # Use automatic mixed precision (FP16)

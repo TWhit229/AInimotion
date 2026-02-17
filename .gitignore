@@ -161,3 +161,27 @@ ffprobe.exe
 # Personal notes and research (not tracked)
 literature/
 docs/
+
+# Training artifacts (large, ephemeral)
+runs/
+wandb/
+sweep_runs/
+sweep_results.json
+sweep_comparison.csv
+checkpoints/
+test_outputs/
+archive/
+
+# Sweep and temp scripts
+sweep.py
+check_sweep.py
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.nav
+*.snm
+*.vrb
+*.synctex.gz

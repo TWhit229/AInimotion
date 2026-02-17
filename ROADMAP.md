@@ -104,20 +104,35 @@ A practical guide from empty repo to working anime video enhancer.
 |------|------|--------|
 | 5.1 | **Dataset loader** — load triplets for training | ✅ |
 | 5.2 | **Training loop** — implement training with loss functions | ✅ |
-| 5.3 | **Progress bars** — tqdm for epochs and batches | ✅ |
-| 5.4 | **Mixed precision** — FP16 for faster training | ✅ |
-| 5.5 | **Checkpointing** — save/resume training | ✅ |
-| 5.6 | **TensorBoard** — real-time loss visualization | ✅ |
-| 5.7 | **Train interpolator** — train on 65K triplets | 🔄 In Progress |
-| 5.8 | **Validation** — test on held-out anime clips | [ ] |
+| 5.3 | **Mixed precision** — FP16/FP32 via GradScaler | ✅ |
+| 5.4 | **Checkpointing** — per-epoch + per-batch, auto-resume | ✅ |
+| 5.5 | **W&B + TensorBoard** — real-time loss/PSNR monitoring | ✅ |
+| 5.6 | **Two-phase training** — Phase 1 reconstruction, Phase 2 GAN | ✅ |
+| 5.7 | **GAN stabilization** — LSGAN, label smoothing, adaptive lr_d, D warmup | ✅ |
+| 5.8 | **OOM recovery** — auto-checkpoint + retry with backoff | ✅ |
+| 5.9 | **Hyperparameter sweep** — 13 experiments, automated comparison | ✅ |
+| 5.10 | **Gradient accumulation** — Phase 2 VRAM management | ✅ |
+| 5.11 | **Full training run** — 50 epochs with sweep-winner config | 🔄 In Progress |
+| 5.12 | **Validation** — test on held-out anime clips | [ ] |
 
-### Training Configuration
-- **Model:** LayeredInterpolator (FPN + SceneGate + AdaCoF)
+### Sweep Results (13 Experiments)
+
+| Rank | Config | PSNR (5 epochs) |
+|------|--------|------------------|
+| 🥇 1 | **heavy_motion_max** (K=9, crop 384, perc=0.1) | **21.80 dB** |
+| 🥈 2 | motion_focused (crop 384, perc=0.1) | 21.73 dB |
+| 🥉 3 | crop_384 (384 crops only) | 21.69 dB |
+| 11 | lr_baseline (current defaults) | 21.06 dB |
+
+**Key finding:** 384×384 crops (+0.74 dB), K=9 kernels, and higher perceptual weight were the biggest wins.
+
+### Training Configuration (Sweep Winner)
+- **Model:** LayeredInterpolator (96 base channels, K=9 AdaCoF)
 - **Dataset:** 65,906 triplets at 720p
-- **GPU:** RTX 5070 Ti (16GB VRAM)
-- **Batch size:** 16
-- **Epochs:** 100
-- **ETA:** ~12-24 hours
+- **GPU:** RTX 5090 (32 GB VRAM)
+- **Phase 1:** Batch 6, crop 384×384, lr=3e-4, 35 epochs
+- **Phase 2:** Batch 3 + 2× gradient accumulation (effective 6), lr=5e-5, 15 epochs
+- **Losses:** L1=1.5, Perceptual=0.1, Edge=1.0 (20× multiplier), GAN=0.005 (Phase 2)
 
 **Milestone:** Custom anime-trained interpolation model ready for inference.
 
@@ -173,32 +188,23 @@ A practical guide from empty repo to working anime video enhancer.
 |-----------|------------|
 | Language | Python 3.10+ |
 | Video I/O | FFmpeg (subprocess) |
-| Inference (dev) | PyTorch + CUDA |
+| Training | PyTorch 2.9+ with CUDA 12.8+ |
 | Inference (prod) | ONNX Runtime + TensorRT |
-| Interpolation | RIFE / IFRNet (or custom) |
+| Interpolation | LayeredInterpolator (custom: FPN + AdaCoF + Affine Grid) |
 | Upscaling | Real-ESRGAN / Compact (or custom) |
 | Encoding | FFmpeg (libx264/libx265) or NVENC |
-| Parallel Processing | concurrent.futures.ThreadPoolExecutor |
+| Monitoring | Weights & Biases + TensorBoard |
+| GPU | NVIDIA RTX 5090 (32 GB) |
 
 ---
 
 ## Getting Started
 
-**Current focus: Phase 0.5 (Training Data)**
+**Current focus: Phase 5 (Model Training)**
 
-The triplet extraction pipeline is complete. Run extraction with:
+Full training is in progress with sweep-optimized config:
 
 ```powershell
-cd "D:\Projects\AInimotion"
-.\scripts\run_all_overnight.ps1
-```
-
-Or manually:
-
-```bash
-python scripts/extract_triplets.py \
-  --input "/path/to/anime" \
-  --output "/path/to/triplets" \
-  --temp-dir "/path/to/temp" \
-  --workers 8
+cd "C:\Projects\AInimotion"
+python -m ainimotion.training.train --config configs/interp_training_5090.yaml --data "D:\Triplets" --wandb --auto-resume
 ```

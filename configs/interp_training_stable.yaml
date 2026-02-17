@@ -1,5 +1,6 @@
 # LayeredInterpolator Training Configuration
 # ============================================
+# STABLE VERSION - Lower LR to reduce gradient explosions
 # Optimized for RTX 5070 Ti (16GB VRAM)
 
 # Model Architecture
@@ -21,16 +22,16 @@ persistent_workers: true # Keep workers alive between epochs
 max_samples: 100000      # Limit dataset size for faster training
 
 # Learning rates
-lr_g: 0.0001             # Generator learning rate
-lr_d: 0.00002            # Much slower D to prevent domination
+lr_g: 0.00005            # Reduced from 0.0001 for stability
+lr_d: 0.00001            # Very slow D to prevent inf gradients
 weight_decay: 0.01       # AdamW weight decay
 
 # Gradient clipping
 grad_clip: 1.0           # Clip gradients to prevent explosion (was inf)
 
 # Loss weights
-l1_weight: 2.0           # Increased for better PSNR (was 1.0)
-perceptual_weight: 0.05  # Reduced to let L1 drive PSNR higher (was 0.1)
+l1_weight: 1.0           # L1 reconstruction loss
+perceptual_weight: 0.1   # VGG perceptual loss
 edge_weight: 1.0         # Edge-weighted L1 loss (doubled for sharper edges)
 edge_multiplier: 20.0    # Edge pixel weight (doubled from 10)
 gan_weight: 0.01         # Adversarial loss weight

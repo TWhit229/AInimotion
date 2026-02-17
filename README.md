@@ -10,33 +10,45 @@
 
 ---
 
-## Current Status: Ready for Training 🚀
+## Current Status: Full Training In Progress 🚀
 
-**65,906 triplets extracted** from diverse anime sources. Training infrastructure ready!
+**65,906 triplets extracted.** Hyperparameter sweep complete (13 experiments). Training with optimized config on RTX 5090.
 
 ### Quick Start Training
 
 ```powershell
 cd "C:\Projects\AInimotion"
-python -m ainimotion.training.train --config configs/interp_training.yaml --data "E:\Triplets"
+python -m ainimotion.training.train --config configs/interp_training_5090.yaml --data "D:\Triplets" --wandb --auto-resume
 ```
+
+### Sweep-Optimized Config
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| **Architecture** | K=9, 96 base channels | AdaCoF kernel 9×9 (sweep winner) |
+| **Crop size** | 384×384 | +0.74 dB PSNR over 256 crops |
+| **Learning rate** | 3e-4 (Phase 1), 5e-5 (Phase 2) | Two-phase training |
+| **Loss weights** | L1=1.5, Perceptual=0.1, Edge=1.0 | Sweep-optimized balance |
+| **Phase 2 GAN** | Batch 3 + 2× gradient accumulation | Effective batch 6, fits in 32 GB |
 
 ### Training Features
 
 | Feature | Description |
 |---------|-------------|
-| **LayeredInterpolator** | FPN + Scene Gate + AdaCoF + Background Flow |
-| **GAN Training** | PatchDiscriminator with LSGAN loss |
-| **Mixed Precision** | FP16 for faster training, lower VRAM |
-| **Progress Bars** | tqdm progress for epochs and batches |
-| **Checkpointing** | Auto-save every 10 epochs, resume support |
-| **TensorBoard** | Real-time loss visualization |
+| **LayeredInterpolator** | FPN + Scene Gate + AdaCoF + Background Flow + Compositor |
+| **Two-Phase Training** | Phase 1: reconstruction only → Phase 2: GAN fine-tuning |
+| **GAN Stabilization** | PatchDiscriminator, LSGAN, label smoothing, adaptive lr_d |
+| **Gradient Accumulation** | Physical batch 3, accumulate 2× for VRAM-safe Phase 2 |
+| **Mixed Precision** | FP16 forward, FP32 gradients via GradScaler |
+| **OOM Recovery** | Auto-checkpoint + retry with backoff on CUDA OOM |
+| **Checkpointing** | Per-epoch + per-N-batches saves, auto-resume support |
+| **W&B + TensorBoard** | Real-time loss/PSNR/gradient monitoring |
 
 ### Requirements
 
-- **GPU**: NVIDIA RTX 3070 or better (16GB+ VRAM recommended)
+- **GPU**: NVIDIA RTX 5090 (32 GB VRAM) — or similar with 24+ GB
 - **PyTorch**: 2.9+ with CUDA 12.8+
-- **Dataset**: 65,906 triplets in E:\Triplets
+- **Dataset**: 65,906 triplets in D:\Triplets
 
 ---
 
@@ -177,21 +189,27 @@ AInimotion/
   ainimotion/
     __init__.py
     data/
-      dataset.py          # Training dataset loader
+      dataset.py           # Training dataset loader
     models/
-      interp/             # Interpolation model
+      interp/              # Interpolation model
+        layered_interp.py  #   Main model orchestrator
+        feature_extractor.py # FPN + correlation volumes
+        background_flow.py #   Affine grid background
+        foreground_flow.py #   AdaCoF deformable foreground
+        compositor.py      #   Alpha blend + refinement U-Net
     training/
-      train.py            # Training loop
-      losses.py           # Loss functions
-      discriminator.py    # GAN discriminator
+      train.py             # Training loop (2-phase, accum, OOM recovery)
+      losses.py            # Loss functions (L1, perceptual, edge)
+      discriminator.py     # PatchGAN discriminator
   scripts/
-    extract_triplets.py   # Training data extraction ✅
-    run_all_overnight.ps1 # Batch processing script ✅
-    run_clean.ps1         # Clean sources script ✅
-    run_hardsubs.ps1      # Hardsub sources script ✅
-    run_test.ps1          # Test script ✅
+    extract_triplets.py    # Training data extraction ✅
+    run_all_overnight.ps1  # Batch processing script ✅
+    run_clean.ps1          # Clean sources script ✅
+    run_hardsubs.ps1       # Hardsub sources script ✅
+    run_test.ps1           # Test script ✅
   configs/
-    interp_training.yaml  # Training configuration
+    interp_training_5090.yaml  # RTX 5090 sweep-optimized config
+    interp_training.yaml       # Base config
 ```
 
 ---
@@ -201,16 +219,17 @@ AInimotion/
 - [x] Phase 0 — Foundations (platform target, inference runtime, presets)
 - [x] **Phase 0.5 — Training Data Pipeline** ✅
   - [x] Triplet extraction script
-  - [x] Parallel processing (8 workers)
-  - [x] 720p output for efficiency
-  - [x] Chunked processing for memory
-  - [x] Skip intro (logos/credits)
-  - [x] Hardsub support (crop top/bottom)
-- [ ] Phase 1 — MVP CLI (end-to-end pipeline)
-- [ ] Phase 2 — Quality hardening (anime-specific tuning)
-- [ ] Phase 3 — Performance + VRAM stability
-- [ ] Phase 4 — Model training on extracted triplets
-- [ ] Phase 5 — GUI + packaging
+  - [x] 65,906 triplets from diverse anime sources
+- [x] Phase 1 — MVP CLI (end-to-end pipeline)
+- [x] Phase 2 — Gating (scene-cut + hold detection)
+- [ ] **Phase 5 — Model Training** ⚡ CURRENT
+  - [x] Training infrastructure (2-phase, GAN, mixed precision, OOM recovery)
+  - [x] Hyperparameter sweep (13 experiments, sweep winner: 21.8 dB PSNR)
+  - [x] Gradient accumulation for Phase 2 VRAM management
+  - [ ] Full training run (50 epochs)
+  - [ ] Validation on held-out clips
+- [ ] Phase 6 — Quality hardening + performance
+- [ ] Phase 7 — GUI + packaging
 
 ---
 
