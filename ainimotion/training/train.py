@@ -217,11 +217,48 @@ class Trainer:
             self._load_checkpoint(resume_from)
     
     def _load_checkpoint(self, path: str):
-        """Load checkpoint and resume training."""
+        """Load checkpoint and resume training.
+        
+        Handles architecture mismatches gracefully: if the checkpoint was
+        trained with a different model config (e.g., kernel_size=7 vs 9),
+        compatible weights are loaded and incompatible ones are re-initialized.
+        Training restarts from epoch 0 in this case.
+        """
         checkpoint = torch.load(path, map_location=self.device)
         
-        self.generator.load_state_dict(checkpoint['generator'])
-        self.discriminator.load_state_dict(checkpoint['discriminator'])
+        # Try strict loading first; fall back to partial on architecture mismatch
+        try:
+            self.generator.load_state_dict(checkpoint['generator'])
+            self.discriminator.load_state_dict(checkpoint['discriminator'])
+        except RuntimeError as e:
+            if "size mismatch" in str(e):
+                print(f"\n[!]  Architecture mismatch detected in checkpoint!")
+                print(f"     (likely kernel_size or base_channels changed)")
+                print(f"     Loading compatible weights only; mismatched layers re-initialized.")
+                
+                # Load generator with strict=False
+                missing_g, unexpected_g = self.generator.load_state_dict(
+                    checkpoint['generator'], strict=False
+                )
+                missing_d, unexpected_d = self.discriminator.load_state_dict(
+                    checkpoint['discriminator'], strict=False
+                )
+                
+                skipped = len(missing_g) + len(unexpected_g)
+                print(f"     Generator:     {skipped} keys skipped/mismatched")
+                skipped_d = len(missing_d) + len(unexpected_d)
+                print(f"     Discriminator: {skipped_d} keys skipped/mismatched")
+                print(f"     Starting training from epoch 0 (fresh optimizers)\n")
+                
+                # Don't load optimizer/scheduler states — they won't match
+                self.start_epoch = 0
+                self.start_batch = 0
+                self.global_step = 0
+                return
+            else:
+                raise
+        
+        # Full match — restore optimizer/scheduler states too
         self.optimizer_g.load_state_dict(checkpoint['optimizer_g'])
         self.optimizer_d.load_state_dict(checkpoint['optimizer_d'])
         self.scheduler_g.load_state_dict(checkpoint['scheduler_g'])
