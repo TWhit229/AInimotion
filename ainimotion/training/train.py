@@ -193,11 +193,13 @@ class Trainer:
         if self.use_wandb:
             import wandb
             self.wandb = wandb
+            wandb_id = config.get('wandb_run_id', None)
             wandb.init(
                 project=config.get('wandb_project', 'AInimotion'),
                 name=config.get('wandb_run_name', f"train_{datetime.now().strftime('%m%d_%H%M')}"),
                 config=config,
-                resume='allow',
+                id=wandb_id,
+                resume='must' if wandb_id else 'allow',
             )
             wandb.watch(self.generator, log='gradients', log_freq=500)
             print(f"  [OK] W&B logging enabled: {wandb.run.url}")
@@ -1096,6 +1098,12 @@ def main():
         action='store_true',
         help='Enable Weights & Biases logging',
     )
+    parser.add_argument(
+        '--wandb-id',
+        type=str,
+        default=None,
+        help='W&B run ID to resume (e.g. zl3w1tx9)',
+    )
     
     args = parser.parse_args()
     
@@ -1137,6 +1145,8 @@ def main():
     # Enable W&B if flag is set
     if args.wandb:
         config['use_wandb'] = True
+    if args.wandb_id:
+        config['wandb_run_id'] = args.wandb_id
     
     # Store data path in config for Phase 2 dataloader rebuild
     config['data_dir'] = args.data
