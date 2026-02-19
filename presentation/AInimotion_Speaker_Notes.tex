@@ -510,7 +510,110 @@ The hyperparameter sweep across 13 configurations found that larger crops (384 v
 \end{saybox}
 
 % ------ SLIDE 10 ------
-\subsection{Slide 10: Summary \& Next Steps}
+\subsection{Slide 10: Training Iterations \& Experimentation}
+
+\begin{conceptbox}{Full Experiment History}
+This slide documents the systematic exploration of approaches, configurations, and architectural decisions throughout the project. Over 30 distinct configurations were tested across 7 major training phases.
+
+\textbf{Phase 1: 32-Channel Prototype (Jan 11--15)}
+\begin{itemize}
+    \item Started with the simplest viable model: 32 base channels, $7\times7$ AdaCoF kernel, $256\times256$ crops.
+    \item Immediately encountered \textbf{gradient explosion} --- \texttt{grad\_norm: inf} on many batches, causing weight corruption and training collapse.
+    \item \textbf{Fix:} Implemented gradient clipping (\texttt{grad\_clip=1.0}) with AMP-aware unscaling. Added gradient norm monitoring to the progress bar and training logs.
+    \item Also discovered corrupted triplets in the dataset causing sporadic crashes --- added fallback handling.
+    \item Built training infrastructure: Ctrl+C save, batch checkpoints every 5000 batches, auto-resume, OOM recovery with retry backoff.
+\end{itemize}
+
+\textbf{Phase 2: 48-Channel Scale-Up (Jan 16--19)}
+\begin{itemize}
+    \item Doubled capacity to 48 channels. Trained for 36 epochs on the RTX 5070 Ti (16 GB VRAM, batch size 8).
+    \item Achieved \textbf{28.72 dB average test PSNR} (min 24.41, max 39.27 on 10 test triplets).
+    \item \textbf{Problem identified:} Discriminator accuracy (\texttt{d\_acc}) consistently hitting 95--100\% by epoch 10+. This meant the GAN term was providing poor gradients to the generator.
+    \item \textbf{Problem identified:} Visible edge blurriness in output frames, especially in high-motion scenes. The model was ``averaging out'' edges rather than preserving sharp ink lines.
+    \item Discovered the ``Training Crop Gap'' --- PSNR measured on $256\times256$ crops ($\sim$22 dB) was much lower than full-resolution test PSNR ($\sim$28 dB). This made it difficult to judge progress from training metrics alone.
+\end{itemize}
+
+\textbf{Phase 3: Probe Experiments (Jan 20 -- 4 experiments)}
+\begin{itemize}
+    \item Ran 4 targeted experiments to understand the discriminator dominance problem:
+    \begin{itemize}
+        \item \texttt{probe\_baseline}: Control run with default settings.
+        \item \texttt{probe\_aggressive\_d\_weaken}: Reduced \texttt{lr\_d} from $5\times10^{-5}$ to $2\times10^{-5}$ and added label smoothing (0.1).
+        \item \texttt{probe\_higher\_gan\_weight}: Doubled GAN weight to give D more influence (made things worse).
+        \item \texttt{probe\_smaller\_model}: Tested whether 32ch was more stable (faster but lower capacity).
+    \end{itemize}
+    \item \textbf{Key insight:} Weakening D helped but wasn't sufficient alone. The model needed a fundamental change in GAN training strategy.
+\end{itemize}
+
+\textbf{Phase 4: Extension Experiments (Jan 20--21 -- 5 experiments)}
+\begin{itemize}
+    \item Extended the probe approach across different model sizes and GAN configurations:
+    \begin{itemize}
+        \item 32ch: high GAN weight, very high GAN weight, equal LR, aggressive throttle
+        \item 48ch: high GAN weight
+    \end{itemize}
+    \item Tested update ratios (\texttt{d\_update\_ratio: 2}) --- training D once for every 2 G updates.
+    \item \textbf{Key insight:} Higher GAN weight universally led to instability. The solution was the opposite: gentler GAN weight \textbf{plus} discriminator throttling.
+\end{itemize}
+
+\textbf{Phase 5: 64-Channel Phase 3 (Jan 21--31)}
+\begin{itemize}
+    \item Implemented all lessons learned into a high-capacity configuration:
+    \begin{itemize}
+        \item Doubled edge penalization (weight $1.0$, multiplier $20\times$)
+        \item Adaptive discriminator LR: monitors \texttt{d\_acc} over 100-batch windows and auto-adjusts \texttt{lr\_d} by $\pm5\%$ to keep D accuracy in the 50--85\% range
+        \item Anti-oscillation safeguards: gentle adjustments, averaging, bounded range, cool-down periods
+        \item 500-batch D warmup at Phase 2 start
+    \end{itemize}
+    \item Achieved \textbf{23.9 dB training crop PSNR} (up from 22.0 with 48ch), confirming higher capacity + edge weighting captures more detail.
+    \item Also implemented a ``stable fallback'' config with halved learning rates for when gradient instability became excessive.
+\end{itemize}
+
+\textbf{Phase 6: GPU Upgrade + 96-Channel Sweep (Feb 16)}
+\begin{itemize}
+    \item Upgraded from RTX 5070 Ti (16 GB) to \textbf{RTX 5090 (32 GB)} --- doubling available VRAM.
+    \item This enabled scaling to \textbf{96 base channels} and \textbf{$384\times384$ crops} simultaneously.
+    \item Ran a \textbf{13-experiment automated hyperparameter sweep} (\texttt{sweep.py}):
+    \begin{itemize}
+        \item Learning rates: 1e-4, 2e-4 (baseline), 4e-4
+        \item Loss balance: L1 dominant (3.0/0.02), perceptual boost (1.5/0.15), balanced (1.0/0.1)
+        \item Edge handling: aggressive ($40\times$) vs.\ mild ($10\times$)
+        \item Crop size: $256\times256$ (baseline) vs.\ $384\times384$
+        \item Kernel size: K=7 (baseline), K=9, K=11
+        \item Combined: ``motion focused'' and ``heavy motion max''
+    \end{itemize}
+    \item \textbf{Winner:} K=9, crop 384, lr 3e-4, L1=1.5, perceptual=0.1 --- achieving \textbf{21.80 dB in just 5 epochs}. Crop 384 alone contributed +0.74 dB.
+\end{itemize}
+
+\textbf{Phase 7: Final Training (Feb 16--present)}
+\begin{itemize}
+    \item Training with sweep-winning configuration at full scale.
+    \item Added \textbf{gradient accumulation} (\texttt{phase2\_batch\_size: 3}, \texttt{gradient\_accumulation\_steps: 2}) for Phase 2 GAN training --- allowing effective batch size of 6 while fitting in VRAM.
+    \item Progress after 7 epochs: \textbf{22.06 dB training crop PSNR}, G loss steadily declining, gradients stable.
+    \item Full training run targeting 50 epochs with W\&B monitoring.
+\end{itemize}
+\end{conceptbox}
+
+\begin{saybox}
+``This slide shows the systematic approach I took to get here. This wasn't just one training run --- it was over 30 distinct configurations across 7 major phases.
+
+I started with a 32-channel prototype and immediately hit gradient explosion. So I added clipping and built robust training infrastructure --- crash recovery, auto-resume, batch checkpoints.
+
+Then I scaled to 48 channels and trained for 36 epochs. I got good results --- 28.7 dB on test images --- but the discriminator kept dominating, hitting 100\% accuracy. That meant the GAN wasn't helping the generator improve.
+
+To understand why, I ran four targeted probe experiments where I systematically varied the discriminator strength. I learned that just weakening D wasn't enough --- I also needed to train it less frequently.
+
+Next I ran five extension experiments across both 32 and 48-channel models to explore GAN weight and update ratios. Higher GAN weight always led to instability. The solution was actually the opposite: gentler GAN weight combined with discriminator throttling.
+
+Armed with those insights, I built the 64-channel Phase 3 configuration with adaptive GAN balancing, edge-aware losses, and discriminator warmup. This got me to 23.9 dB on training crops.
+
+After upgrading to an RTX 5090, which doubled my VRAM, I could push to 96 channels and run a systematic 13-experiment hyperparameter sweep. The sweep tested learning rates, loss balances, edge handling, crop sizes, and kernel sizes. The winner was K=9 with 384 crops and boosted perceptual weight, which hit 21.8 dB in just 5 epochs.
+
+Now the final training is running with all those optimizations, and it's at 22.06 dB after 7 epochs and still climbing.''
+\end{saybox}
+
+% ------ SLIDE 11 ------
+\subsection{Slide 11: Summary \& Next Steps}
 
 \begin{saybox}
 ``To summarize: I built a LayeredInterpolator that separates background and foreground motion --- the first VFI architecture to do so. I designed anime-specific edge-aware losses, a stable two-phase training strategy, and robust training infrastructure.
