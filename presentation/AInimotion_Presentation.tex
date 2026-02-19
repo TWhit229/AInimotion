@@ -395,38 +395,43 @@ Phase 2: + perceptual sharpness via GAN
 % ==============================
 
 \begin{frame}{Training Iterations \& Experimentation}
-\begin{columns}
-\begin{column}{0.55\textwidth}
-\footnotesize
-\begin{tabular}{@{}p{1.7cm}p{1.5cm}p{2.2cm}@{}}
-\toprule
-\textbf{Phase} & \textbf{Config} & \textbf{Key Insight} \\
-\midrule
-Prototype & 32ch, K=7 & Gradient explosion $\to$ added clipping \\
-Scale-up & 48ch, K=7 & 28.7 dB test; D dominance issue \\
-Probes (4) & 48ch varied & D weakening helps but not enough \\
-Extensions (5) & 32ch/48ch & Higher GAN weight $\to$ instability \\
-Phase 3 & 64ch, K=7 & Edge-aware + adaptive lr\_d \\
-GPU Upgrade & 5070 Ti $\to$ 5090 & $2\times$ VRAM (16$\to$32 GB) \\
-Sweep (13) & 96ch varied & K=9, crop 384, perc 0.1 wins \\
-\textbf{Final} & \textbf{96ch, K=9} & \textbf{In progress (ep 7+)} \\
-\bottomrule
-\end{tabular}
+\scriptsize
+\begin{columns}[T]
+\begin{column}{0.48\textwidth}
+\textbf{Phase 1: Prototype} \hfill \textit{32ch, K=7}\\
+Gradient explosion $\to$ added clipping + AMP\\[3pt]
+\textbf{Phase 2: Scale-Up} \hfill \textit{48ch, K=7}\\
+28.7\,dB test PSNR; D dominance emerged\\[3pt]
+\textbf{Phase 3: Probes} \hfill \textit{4 experiments}\\
+Weakening D helps, but not alone\\[3pt]
+\textbf{Phase 4: Extensions} \hfill \textit{5 experiments}\\
+Higher GAN weight $\to$ instability; throttling wins
 \end{column}
-\begin{column}{0.42\textwidth}
-\textbf{What changed and why:}
-\begin{itemize}
-    \item \textbf{4 capacity levels} (32$\to$48$\to$64$\to$96 channels)
-    \item \textbf{9 GAN balance experiments} to tame discriminator
-    \item \textbf{13-experiment sweep} covering lr, loss weights, kernel, crop size
-    \item \textbf{Gradient accumulation} for large crops on 32\,GB VRAM
-\end{itemize}
+\begin{column}{0.48\textwidth}
+\textbf{Phase 5: Edge-Aware} \hfill \textit{64ch, K=7}\\
+Adaptive lr\_d + $20\times$ edge mult $\to$ 23.9\,dB\\[3pt]
+\textbf{Phase 6: Sweep} \hfill \textit{96ch, 13 configs}\\
+K=9, crop 384, perc 0.1 wins at 21.8\,dB\\[3pt]
+\textbf{Phase 7: Final Run} \hfill \textit{96ch, K=9}\\
+Gradient accumulation; 22.1\,dB at epoch 7\\[3pt]
+\textbf{Hardware:} 5070\,Ti (16\,GB) $\to$ 5090 (32\,GB)
+\end{column}
+\end{columns}
 
-\vspace{0.15cm}
-\begin{block}{Total Experiments}
+\vspace{0.2cm}
+\begin{columns}
+\begin{column}{0.48\textwidth}
+\begin{block}{Scale of Exploration}
 \centering
-\textbf{30+ configurations tested}\\
-across 7 major training phases
+\textbf{30+ configurations} across \textbf{7 phases}\\
+4 capacity levels $\cdot$ 9 GAN experiments $\cdot$ 13-run sweep
+\end{block}
+\end{column}
+\begin{column}{0.48\textwidth}
+\begin{block}{Key Lesson}
+\centering
+GAN training in anime VFI is highly\\
+sensitive --- systematic search is essential
 \end{block}
 \end{column}
 \end{columns}

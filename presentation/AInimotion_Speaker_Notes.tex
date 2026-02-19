@@ -512,104 +512,114 @@ The hyperparameter sweep across 13 configurations found that larger crops (384 v
 % ------ SLIDE 10 ------
 \subsection{Slide 10: Training Iterations \& Experimentation}
 
-\begin{conceptbox}{Full Experiment History}
-This slide documents the systematic exploration of approaches, configurations, and architectural decisions throughout the project. Over 30 distinct configurations were tested across 7 major training phases.
+\begin{conceptbox}{Full Experiment History --- Detailed}
+This slide documents the systematic exploration of approaches, configurations, and architectural decisions throughout the project. Over 30 distinct configurations were tested across 7 major training phases. Below is a detailed breakdown of each phase, what was tried, what went wrong, and what was learned.
 
 \textbf{Phase 1: 32-Channel Prototype (Jan 11--15)}
 \begin{itemize}
-    \item Started with the simplest viable model: 32 base channels, $7\times7$ AdaCoF kernel, $256\times256$ crops.
-    \item Immediately encountered \textbf{gradient explosion} --- \texttt{grad\_norm: inf} on many batches, causing weight corruption and training collapse.
-    \item \textbf{Fix:} Implemented gradient clipping (\texttt{grad\_clip=1.0}) with AMP-aware unscaling. Added gradient norm monitoring to the progress bar and training logs.
-    \item Also discovered corrupted triplets in the dataset causing sporadic crashes --- added fallback handling.
-    \item Built training infrastructure: Ctrl+C save, batch checkpoints every 5000 batches, auto-resume, OOM recovery with retry backoff.
+    \item Started with the simplest viable model: 32 base channels, a $7\times7$ AdaCoF kernel, and $256\times256$ training crops. ``Base channels'' refers to the width of the first convolutional layer --- every subsequent layer in the U-Net encoder doubles this count (32$\to$64$\to$128$\to$256), so the total parameter count grows quadratically with this number.
+    \item Immediately encountered \textbf{gradient explosion}: the gradient norm (a single number measuring how ``steep'' the loss landscape is at the current point) would spike to infinity on certain batches. When this happens, the optimizer takes an infinitely large step, corrupting all learned weights and collapsing the model. In mixed-precision training (AMP), this is even more likely because FP16 has a much smaller dynamic range than FP32 --- large intermediate activations overflow to \texttt{inf}.
+    \item \textbf{Fix}: Implemented \textbf{gradient clipping} (\texttt{grad\_clip=1.0}): after computing gradients but before updating weights, if the total gradient norm exceeds 1.0, all gradients are scaled down proportionally. This caps the maximum step size the optimizer can take, preventing catastrophic weight corruption. AMP requires an extra step: gradients must be ``unscaled'' (divided by the loss scaler's current scale factor) \textit{before} clipping, because the scaler artificially inflates gradients to maintain precision in FP16.
+    \item Also discovered corrupted triplets in the dataset (truncated JPEG files, missing frames) that caused sporadic crashes during image loading. Added a \texttt{try/except} fallback in the data loader that skips bad triplets and returns a random valid one instead.
+    \item Built essential training infrastructure during this phase:
+    \begin{itemize}
+        \item \textbf{Ctrl+C graceful save}: Catches \texttt{KeyboardInterrupt} and saves a checkpoint before exiting, so multi-day training runs can be paused without losing progress.
+        \item \textbf{Batch checkpoints every 5,000 batches}: Saves mid-epoch so that if power is lost or the system crashes, at most $\sim$1 hour of training is lost (on the 5070\,Ti).
+        \item \textbf{Auto-resume}: The \texttt{-{}-auto-resume} flag automatically finds and loads the latest checkpoint, eliminating the need to manually specify checkpoint paths.
+        \item \textbf{OOM recovery with retry backoff}: If PyTorch throws an ``out of memory'' error (which can happen for unusually complex batches), the trainer catches the error, frees GPU memory with \texttt{torch.cuda.empty\_cache()}, saves a checkpoint, waits 10 seconds (increasing by 10s per retry), and then resumes. This allows training to survive occasional VRAM spikes without human intervention.
+    \end{itemize}
 \end{itemize}
 
 \textbf{Phase 2: 48-Channel Scale-Up (Jan 16--19)}
 \begin{itemize}
-    \item Doubled capacity to 48 channels. Trained for 36 epochs on the RTX 5070 Ti (16 GB VRAM, batch size 8).
-    \item Achieved \textbf{28.72 dB average test PSNR} (min 24.41, max 39.27 on 10 test triplets).
-    \item \textbf{Problem identified:} Discriminator accuracy (\texttt{d\_acc}) consistently hitting 95--100\% by epoch 10+. This meant the GAN term was providing poor gradients to the generator.
-    \item \textbf{Problem identified:} Visible edge blurriness in output frames, especially in high-motion scenes. The model was ``averaging out'' edges rather than preserving sharp ink lines.
-    \item Discovered the ``Training Crop Gap'' --- PSNR measured on $256\times256$ crops ($\sim$22 dB) was much lower than full-resolution test PSNR ($\sim$28 dB). This made it difficult to judge progress from training metrics alone.
+    \item Increased model capacity by scaling base channels from 32 to 48 (a 50\% increase). ``Capacity'' means the model's ability to represent complex patterns --- more channels means each layer can learn more distinct features (edge detectors, motion estimators, texture patterns). Trained for 36 epochs on the RTX 5070\,Ti (16\,GB VRAM), using a batch size of 8.
+    \item Achieved \textbf{28.72\,dB average test PSNR} when evaluated on 10 full-resolution test triplets. PSNR (Peak Signal-to-Noise Ratio) measures pixel-level accuracy on a logarithmic decibel scale: every +3\,dB roughly halves the mean squared error. 28.72\,dB is a strong result, competitive with general-purpose VFI methods on anime content.
+    \item \textbf{Problem: Discriminator dominance.} In GAN training, the Generator (G) tries to create realistic frames while the Discriminator (D) tries to distinguish generated frames from real ones. Ideally, they improve together --- G gets better at fooling D, and D gets better at catching fakes, creating a feedback loop that pushes quality up. But here, D was ``winning the arms race'': its accuracy (\texttt{d\_acc}) consistently hit 95--100\% by epoch 10. When D is that accurate, it classifies every generated frame as ``clearly fake'' with near-100\% confidence. The gradient signal it sends back to G becomes essentially ``everything you make is equally bad'' --- which gives G no useful information about \textit{where} or \textit{how} to improve. This is called ``vanishing generator gradients.''
+    \item \textbf{Problem: Edge blurriness.} Visual inspection of output frames revealed that object outlines (especially anime ink lines) were being softened and blurred, particularly in scenes with significant motion. The model was ``averaging out'' edges --- predicting a weighted average of slightly different possible positions rather than committing to one sharp position. This is a well-known failure mode of L1/L2 reconstruction losses: they penalize being wrong in any direction equally, so the network learns that the safest strategy is to predict the mean, which looks blurry.
+    \item Discovered the \textbf{``Training Crop Gap''}: PSNR measured on random $256\times256$ training crops was around 22\,dB, but PSNR on full-resolution test images was $\sim$28\,dB. This is because crops are disproportionately likely to contain difficult content (fast motion, complex textures, occluded edges), while full images include large areas of simple backgrounds where the model easily achieves near-perfect reconstruction, inflating the average. This made it hard to judge mid-training progress from metrics alone.
 \end{itemize}
 
-\textbf{Phase 3: Probe Experiments (Jan 20 -- 4 experiments)}
+\textbf{Phase 3: Probe Experiments (Jan 20 --- 4 experiments)}
+
+``Probes'' were short, targeted training runs (just a few epochs each) designed to isolate and understand a single variable. Each started from scratch with the same 48ch model:
 \begin{itemize}
-    \item Ran 4 targeted experiments to understand the discriminator dominance problem:
-    \begin{itemize}
-        \item \texttt{probe\_baseline}: Control run with default settings.
-        \item \texttt{probe\_aggressive\_d\_weaken}: Reduced \texttt{lr\_d} from $5\times10^{-5}$ to $2\times10^{-5}$ and added label smoothing (0.1).
-        \item \texttt{probe\_higher\_gan\_weight}: Doubled GAN weight to give D more influence (made things worse).
-        \item \texttt{probe\_smaller\_model}: Tested whether 32ch was more stable (faster but lower capacity).
-    \end{itemize}
-    \item \textbf{Key insight:} Weakening D helped but wasn't sufficient alone. The model needed a fundamental change in GAN training strategy.
+    \item \texttt{probe\_baseline}: A control run with default settings. Established the baseline \texttt{d\_acc} trajectory and PSNR curve to compare against.
+    \item \texttt{probe\_aggressive\_d\_weaken}: Reduced the discriminator's learning rate from $5\times10^{-5}$ to $2\times10^{-5}$ and added \textbf{label smoothing} (0.1). Label smoothing means that instead of training D with ``this is definitely real (1.0)'' and ``this is definitely fake (0.0),'' you use softened labels like 0.9 and 0.1. This prevents D from becoming overconfident and forces it to maintain some uncertainty, which produces more useful gradients for G.
+    \item \texttt{probe\_higher\_gan\_weight}: Doubled the GAN loss weight to give D more influence over G's training. The hypothesis was that if D has more ``pull'' on G, G would be forced to produce sharper, more realistic outputs. \textbf{Result: this made things worse} --- the generator became unstable because the GAN gradient overwhelmed the reconstruction gradient, causing PSNR to drop.
+    \item \texttt{probe\_smaller\_model}: Tested whether going back to 32 channels would be more stable (since a smaller generator might be easier for D to ``teach''). Training was faster and more stable, but quality was lower --- the model simply didn't have enough capacity.
+    \item \textbf{Key insight}: Weakening D helped but wasn't sufficient alone. The fundamental problem was that D learns much faster than G (it's a simpler classification task), so it always ``runs ahead.'' The model needed a structural change in how often D gets to train, not just slower training.
 \end{itemize}
 
-\textbf{Phase 4: Extension Experiments (Jan 20--21 -- 5 experiments)}
+\textbf{Phase 4: Extension Experiments (Jan 20--21 --- 5 experiments)}
+
+Extended the probe methodology across different model sizes and more extreme configurations:
 \begin{itemize}
-    \item Extended the probe approach across different model sizes and GAN configurations:
+    \item Five runs testing different approaches to GAN balance:
     \begin{itemize}
-        \item 32ch: high GAN weight, very high GAN weight, equal LR, aggressive throttle
-        \item 48ch: high GAN weight
+        \item \texttt{ext\_32ch\_high\_gan}: 32-channel model with high GAN weight (more D influence)
+        \item \texttt{ext\_32ch\_very\_high\_gan}: Even higher GAN weight --- aggressive push
+        \item \texttt{ext\_32ch\_equal\_lr}: Generator and discriminator with the same learning rate (normally D is slower)
+        \item \texttt{ext\_32ch\_aggressive\_throttle}: Discriminator trained only once every 3 generator updates
+        \item \texttt{ext\_48ch\_high\_gan}: 48-channel model with high GAN weight (combining capacity with aggressive GAN)
     \end{itemize}
-    \item Tested update ratios (\texttt{d\_update\_ratio: 2}) --- training D once for every 2 G updates.
-    \item \textbf{Key insight:} Higher GAN weight universally led to instability. The solution was the opposite: gentler GAN weight \textbf{plus} discriminator throttling.
+    \item Introduced the \textbf{update ratio} concept (\texttt{d\_update\_ratio}): instead of training D on every batch, only train D once for every $N$ generator updates. For example, with a ratio of 2, the generator gets twice as many training steps as the discriminator, giving G a ``head start'' in the arms race.
+    \item \textbf{Key insight}: Higher GAN weight universally led to instability. The correct approach was actually the opposite: use a \textit{gentler} GAN weight \textbf{combined with} discriminator throttling. This lets the reconstruction losses (L1, perceptual, edge) do the heavy lifting for accuracy, while the GAN term provides a gentle ``nudge'' toward realism.
 \end{itemize}
 
-\textbf{Phase 5: 64-Channel Phase 3 (Jan 21--31)}
+\textbf{Phase 5: 64-Channel Edge-Aware Phase (Jan 21--31)}
 \begin{itemize}
-    \item Implemented all lessons learned into a high-capacity configuration:
+    \item Implemented all accumulated lessons into a high-capacity 64-channel configuration:
     \begin{itemize}
-        \item Doubled edge penalization (weight $1.0$, multiplier $20\times$)
-        \item Adaptive discriminator LR: monitors \texttt{d\_acc} over 100-batch windows and auto-adjusts \texttt{lr\_d} by $\pm5\%$ to keep D accuracy in the 50--85\% range
-        \item Anti-oscillation safeguards: gentle adjustments, averaging, bounded range, cool-down periods
-        \item 500-batch D warmup at Phase 2 start
+        \item \textbf{Doubled edge penalization}: The edge-weighted L1 loss uses a Sobel filter to detect edges in the ground truth frame, then applies a higher penalty to errors on those edge pixels. The edge weight went from $0.5 \to 1.0$ and the edge multiplier from $10\times \to 20\times$. The multiplier $20\times$ means that a 1-pixel error on an ink line is penalized 20 times more heavily than the same error on a flat background region.
+        \item \textbf{Adaptive discriminator LR}: A self-balancing system that monitors \texttt{d\_acc} over a rolling 100-batch window. If D accuracy averages above 85\%, D's learning rate is reduced by 5\%. If it drops below 50\%, D's learning rate is increased by 5\%. This creates a feedback loop that automatically keeps GAN training balanced without manual tuning. Anti-oscillation safeguards ensure the LR doesn't ``ping-pong'' back and forth: adjustments are gentle (5\%), bounded (10\%--1000\% of initial), and have a 100-batch cooldown between changes.
+        \item \textbf{500-batch D warmup}: When Phase 2 (GAN training) activates, the discriminator is trained alone for 500 batches before the generator sees any GAN gradient. This gives D a ``head start'' so it can form meaningful opinions about image quality before it starts sending feedback to G. Without warmup, D's early gradients are random noise.
     \end{itemize}
-    \item Achieved \textbf{23.9 dB training crop PSNR} (up from 22.0 with 48ch), confirming higher capacity + edge weighting captures more detail.
-    \item Also implemented a ``stable fallback'' config with halved learning rates for when gradient instability became excessive.
+    \item Achieved \textbf{23.9\,dB on training crops} (up from 22.0 with 48ch), confirming that higher capacity combined with targeted edge weighting captures significantly more high-frequency detail.
+    \item Also created a \textbf{stable fallback config}: if gradient instability became excessive (persistent \texttt{inf} on nearly every batch), training could be restarted with halved learning rates (\texttt{lr\_g: 5e-5}, \texttt{lr\_d: 1e-5}). Slower convergence, but much less prone to FP16 overflow.
 \end{itemize}
 
 \textbf{Phase 6: GPU Upgrade + 96-Channel Sweep (Feb 16)}
 \begin{itemize}
-    \item Upgraded from RTX 5070 Ti (16 GB) to \textbf{RTX 5090 (32 GB)} --- doubling available VRAM.
-    \item This enabled scaling to \textbf{96 base channels} and \textbf{$384\times384$ crops} simultaneously.
-    \item Ran a \textbf{13-experiment automated hyperparameter sweep} (\texttt{sweep.py}):
+    \item Upgraded from RTX 5070\,Ti (16\,GB VRAM) to \textbf{RTX 5090 (32\,GB)} --- doubling available memory. This removed the VRAM bottleneck that had constrained batch size and model capacity throughout the project.
+    \item With 32\,GB, the model could scale to \textbf{96 base channels} (3$\times$ the prototype) and \textbf{$384\times384$ crops} simultaneously. Larger crops capture more spatial context for motion estimation --- a $384\times384$ crop covers $\sim$2.25$\times$ the area of a $256\times256$ crop, meaning the optical flow estimator can ``see'' larger displacements.
+    \item Ran a \textbf{13-experiment automated hyperparameter sweep} using a custom script (\texttt{sweep.py}). A hyperparameter sweep is a structured search where you vary one or two parameters at a time while keeping everything else constant, run short training sessions (5 epochs each), and compare the resulting PSNR to find the best combination. The 13 experiments were:
     \begin{itemize}
-        \item Learning rates: 1e-4, 2e-4 (baseline), 4e-4
-        \item Loss balance: L1 dominant (3.0/0.02), perceptual boost (1.5/0.15), balanced (1.0/0.1)
-        \item Edge handling: aggressive ($40\times$) vs.\ mild ($10\times$)
-        \item Crop size: $256\times256$ (baseline) vs.\ $384\times384$
-        \item Kernel size: K=7 (baseline), K=9, K=11
-        \item Combined: ``motion focused'' and ``heavy motion max''
+        \item \textit{Learning rate} (3 runs): \texttt{lr\_g} = 1e-4, 2e-4 (baseline), 4e-4. The learning rate controls how large each weight update step is. Too low = slow convergence; too high = overshooting and instability.
+        \item \textit{Loss balance} (3 runs): L1-dominant (3.0/0.02), perceptual-boost (1.5/0.15), balanced (1.0/0.1). These weights control the relative importance of pixel-level accuracy (L1) versus perceptual quality (VGG feature similarity). Higher perceptual weight encourages the model to produce outputs that ``look right'' to a pre-trained VGG network, even if individual pixels aren't perfect.
+        \item \textit{Edge handling} (2 runs): aggressive ($40\times$ multiplier) vs.\ mild ($10\times$). Tested how strongly to penalize edge errors.
+        \item \textit{Crop size} (1 run): $384\times384$ vs.\ $256\times256$ baseline. Tested whether more spatial context improves motion estimation.
+        \item \textit{Kernel size} (2 runs): K=9 and K=11 vs.\ K=7 baseline. The AdaCoF kernel size determines the maximum pixel displacement the model can handle in a single step. K=7 means a $7\times7$ search window ($\pm3$ pixels per kernel application), while K=9 expands this to $\pm4$ pixels, allowing the model to handle larger frame-to-frame motion.
+        \item \textit{Combined} (2 runs): ``motion focused'' (best non-kernel params combined) and ``heavy motion max'' (all best params including K=9).
     \end{itemize}
-    \item \textbf{Winner:} K=9, crop 384, lr 3e-4, L1=1.5, perceptual=0.1 --- achieving \textbf{21.80 dB in just 5 epochs}. Crop 384 alone contributed +0.74 dB.
+    \item \textbf{Winner}: \texttt{heavy\_motion\_max} --- K=9, crop 384, lr 3e-4, L1=1.5, perceptual=0.1. Achieved \textbf{21.80\,dB in just 5 epochs}. Notable finding: crop 384 alone (without changing anything else) contributed +0.74\,dB, demonstrating that spatial context is critical for anime motion.
 \end{itemize}
 
-\textbf{Phase 7: Final Training (Feb 16--present)}
+\textbf{Phase 7: Final Training Run (Feb 16--present)}
 \begin{itemize}
-    \item Training with sweep-winning configuration at full scale.
-    \item Added \textbf{gradient accumulation} (\texttt{phase2\_batch\_size: 3}, \texttt{gradient\_accumulation\_steps: 2}) for Phase 2 GAN training --- allowing effective batch size of 6 while fitting in VRAM.
-    \item Progress after 7 epochs: \textbf{22.06 dB training crop PSNR}, G loss steadily declining, gradients stable.
-    \item Full training run targeting 50 epochs with W\&B monitoring.
+    \item Training with the sweep-winning configuration at full scale (96ch, K=9, 384 crops, 50 epochs).
+    \item Added \textbf{gradient accumulation} for Phase 2 (GAN) training. When the GAN activates, the model needs more VRAM for the discriminator's forward/backward passes. With 96 channels and $384\times384$ crops, a batch of 6 doesn't fit. Gradient accumulation solves this by processing smaller mini-batches (batch size 3), computing gradients for each, and summing them over 2 mini-batches before doing a single optimizer step. This gives the same mathematical result as batch size 6, but never needs to hold 6 samples in VRAM simultaneously. The loss is divided by the accumulation count to ensure gradients average correctly.
+    \item Progress after 7 epochs: \textbf{22.06\,dB on training crops}. The generator loss is steadily declining (0.188 $\to$ 0.169) and gradient norms are stable ($\sim$1.2). Training is on a normal PSNR learning curve.
+    \item Note: 22.06\,dB on $384\times384$ training crops is not directly comparable to the 28.72\,dB test result from Phase 2, because training crops are harder (more motion-dense) and smaller. Full-resolution evaluation will likely show significantly higher PSNR.
+    \item Training is monitored via Weights \& Biases (W\&B) with a \texttt{-{}-wandb-id} flag that allows resuming the same W\&B run after interruptions (e.g., power loss).
 \end{itemize}
 \end{conceptbox}
 
 \begin{saybox}
-``This slide shows the systematic approach I took to get here. This wasn't just one training run --- it was over 30 distinct configurations across 7 major phases.
+``This slide shows the systematic approach I took to get here. This wasn't a single training run --- over the course of this project, I tested more than 30 distinct configurations across 7 major phases.
 
-I started with a 32-channel prototype and immediately hit gradient explosion. So I added clipping and built robust training infrastructure --- crash recovery, auto-resume, batch checkpoints.
+I started with a small 32-channel prototype to get the basic pipeline working. ``Channels'' here means the width of the convolutional layers --- more channels means the model can learn more features, but also needs more GPU memory. Right away I hit a problem called gradient explosion, where the training gradients would spike to infinity and corrupt all the learned weights. I fixed this by implementing gradient clipping, which caps the maximum step size the optimizer can take. I also built critical infrastructure during this phase: crash recovery, automatic checkpoint saving every 5,000 batches, and OOM error handling.
 
-Then I scaled to 48 channels and trained for 36 epochs. I got good results --- 28.7 dB on test images --- but the discriminator kept dominating, hitting 100\% accuracy. That meant the GAN wasn't helping the generator improve.
+Then I scaled to 48 channels and got to 28.7 dB on test images after 36 epochs. But I noticed a problem with the GAN training. In a GAN, the generator creates images and the discriminator tries to tell them apart from real images. Ideally they improve together, but my discriminator was winning too easily --- hitting 100\% accuracy. When that happens, the discriminator's feedback to the generator becomes useless: it just says `everything you make is equally bad' without telling the generator what specifically to fix.
 
-To understand why, I ran four targeted probe experiments where I systematically varied the discriminator strength. I learned that just weakening D wasn't enough --- I also needed to train it less frequently.
+To understand this, I ran four probe experiments --- short targeted runs where I changed one variable at a time. I tried weakening the discriminator, strengthening the GAN signal, and shrinking the model. The key finding was that weakening the discriminator with a lower learning rate helped, but wasn't enough by itself.
 
-Next I ran five extension experiments across both 32 and 48-channel models to explore GAN weight and update ratios. Higher GAN weight always led to instability. The solution was actually the opposite: gentler GAN weight combined with discriminator throttling.
+So I ran five more extension experiments across both 32 and 48-channel models, testing different GAN weights and update ratios. An update ratio means the generator gets trained more often than the discriminator, giving it a head start. The counterintuitive insight was that increasing the GAN weight --- giving the discriminator more influence --- always made things worse. The solution was actually reducing the GAN weight and training the discriminator less frequently.
 
-Armed with those insights, I built the 64-channel Phase 3 configuration with adaptive GAN balancing, edge-aware losses, and discriminator warmup. This got me to 23.9 dB on training crops.
+With those lessons, I built the 64-channel configuration with adaptive GAN balancing. This is a self-tuning system that monitors the discriminator's accuracy over a window of batches and automatically adjusts its learning rate to keep the accuracy in a healthy range. I also doubled the edge penalization factor, which tells the model to pay 20 times more attention to ink line edges compared to flat background regions.
 
-After upgrading to an RTX 5090, which doubled my VRAM, I could push to 96 channels and run a systematic 13-experiment hyperparameter sweep. The sweep tested learning rates, loss balances, edge handling, crop sizes, and kernel sizes. The winner was K=9 with 384 crops and boosted perceptual weight, which hit 21.8 dB in just 5 epochs.
+After upgrading to an RTX 5090 with 32 gigabytes of VRAM, I could scale to 96 channels and run a systematic 13-experiment hyperparameter sweep. I tested learning rates, the balance between pixel-level and perceptual losses, edge handling intensity, crop sizes, and kernel sizes. The kernel size is particularly important because it determines how far the model can `reach' when warping pixels between frames --- a 9-by-9 kernel covers a wider search area than 7-by-7. The winning combination was K equals 9, 384 pixel crops, learning rate 3e-4, and boosted perceptual weight. Just changing the crop size from 256 to 384 gave a 0.74 dB improvement, showing that spatial context really matters for motion estimation.
 
-Now the final training is running with all those optimizations, and it's at 22.06 dB after 7 epochs and still climbing.''
+Now the final training is running with all of those optimizations applied, and it's currently at 22 dB on training crops after 7 epochs, with metrics steadily improving.''
 \end{saybox}
 
 % ------ SLIDE 11 ------
