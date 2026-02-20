@@ -35,19 +35,23 @@ edge_weight: 1.0         # Edge-weighted L1 loss (doubled for sharper edges)
 edge_multiplier: 20.0    # Edge pixel weight (doubled from 10)
 gan_weight: 0.005        # Lower GAN weight for Phase 2 fine-tuning
 
-# GAN configuration
+# GAN configuration — R3GAN-inspired (arXiv 2501.05441)
 gan_start_epoch: 35      # No GAN for epochs 0-34, enable at epoch 35
-gan_type: lsgan          # 'vanilla', 'lsgan', or 'hinge'
-label_smoothing: 0.1     # Makes D's task harder (prevents overconfidence)
-d_update_ratio: 2        # Update D every N batches (G trains more often)
+gan_type: relativistic   # RpGAN loss (couples real/fake for mode coverage)
+r1_gamma: 10.0           # R1 gradient penalty on real data (convergence guarantee)
+r2_gamma: 10.0           # R2 gradient penalty on fake data (convergence guarantee)
 lr_g_phase2: 0.00005     # Lower lr_g when GAN activates for stable fine-tuning
+# Old ad-hoc workarounds (no longer needed with R1+R2 penalties):
+# label_smoothing: 0.1   # Replaced by R1/R2 penalties
+# d_update_ratio: 2      # Replaced by R1/R2 penalties
 
 # Phase 2 VRAM management (gradient accumulation)
 phase2_batch_size: 3     # Physical batch during Phase 2 (discriminator needs VRAM)
 gradient_accumulation_steps: 2  # Accumulate 2 mini-batches → effective batch = 6
 
-# Mixed precision
-use_amp: true            # Use automatic mixed precision (FP16)
+# Mixed precision — BFloat16 recommended by R3GAN paper (FP16 "cripples" their loss)
+use_amp: true
+amp_dtype: bfloat16      # BFloat16 = wider range than FP16, no loss scaling needed
 cudnn_benchmark: true    # Enable cuDNN auto-tuner for faster training
 
 # Logging and checkpointing

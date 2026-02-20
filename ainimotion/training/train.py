@@ -2,8 +2,9 @@
 Training loop for the LayeredInterpolator model.
 
 Supports:
-- GAN training with discriminator
-- Mixed precision (FP16)
+- GAN training with discriminator (LSGAN, hinge, or R3GAN-style relativistic)
+- R1/R2 zero-centered gradient penalties (Mescheder et al. 2018)
+- Mixed precision (FP16 or BFloat16)
 - Checkpointing and resumption
 - TensorBoard logging
 - Weights & Biases logging (--wandb flag)
@@ -23,7 +24,10 @@ import yaml
 
 from ainimotion.models.interp import LayeredInterpolator
 from ainimotion.training.losses import VFILoss
-from ainimotion.training.discriminator import PatchDiscriminator, GANLoss
+from ainimotion.training.discriminator import (
+    PatchDiscriminator, GANLoss,
+    compute_r1_penalty, compute_r2_penalty,
+)
 from ainimotion.data.dataset import create_dataloader
 
 
@@ -111,6 +115,10 @@ class Trainer:
         
         self.gan_weight = config.get('gan_weight', 0.01)
         
+        # R1/R2 gradient penalties (Mescheder et al. 2018 / R3GAN 2025)
+        self.r1_gamma = config.get('r1_gamma', 0.0)  # 0 = disabled; try 10.0
+        self.r2_gamma = config.get('r2_gamma', 0.0)  # 0 = disabled; try 10.0
+        
         # Two-phase training: no GAN until gan_start_epoch
         self.gan_start_epoch = config.get('gan_start_epoch', 0)  # 0 = GAN from start
         self.lr_g_phase2 = config.get('lr_g_phase2', None)  # Optional lr_g reduction for Phase 2
@@ -179,9 +187,15 @@ class Trainer:
             T_max=config.get('epochs', 100),
         )
         
-        # Mixed precision
+        # Mixed precision (FP16 or BFloat16)
         self.use_amp = config.get('use_amp', True)
-        self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
+        amp_dtype_str = config.get('amp_dtype', 'float16')  # 'float16' or 'bfloat16'
+        self.amp_dtype = torch.bfloat16 if amp_dtype_str == 'bfloat16' else torch.float16
+        # BF16 doesn't need loss scaling (no inf risk), so disable scaler for BF16
+        use_scaler = self.use_amp and self.amp_dtype == torch.float16
+        self.scaler = torch.amp.GradScaler('cuda', enabled=use_scaler)
+        if self.use_amp:
+            print(f"  [AMP] Using {amp_dtype_str} mixed precision")
         
         # Logging
         self.log_dir = Path(config.get('log_dir', 'runs')) / datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -382,21 +396,37 @@ class Trainer:
             if not skip_d_update:
                 self.optimizer_d.zero_grad()
                 
-                with torch.amp.autocast('cuda', enabled=self.use_amp):
+                with torch.amp.autocast('cuda', enabled=self.use_amp, dtype=self.amp_dtype):
                     # Generate fake frame
                     with torch.no_grad():
                         output = self.generator(frame1, frame3)
                         fake_frame = output['output']
                     
-                    # Real loss
+                    # D predictions
                     pred_real = self.discriminator(frame2)
-                    loss_d_real = self.gan_loss(pred_real, is_real=True)
-                    
-                    # Fake loss
                     pred_fake = self.discriminator(fake_frame.detach())
-                    loss_d_fake = self.gan_loss(pred_fake, is_real=False)
                     
-                    loss_d = (loss_d_real + loss_d_fake) * 0.5
+                    # GAN loss (relativistic uses paired predictions)
+                    if self.gan_loss.is_relativistic:
+                        loss_d = self.gan_loss(
+                            pred_real, pred_other=pred_fake,
+                            for_discriminator=True,
+                        )
+                    else:
+                        loss_d_real = self.gan_loss(pred_real, is_real=True)
+                        loss_d_fake = self.gan_loss(pred_fake, is_real=False)
+                        loss_d = (loss_d_real + loss_d_fake) * 0.5
+                
+                # R1/R2 gradient penalties (computed outside autocast for precision)
+                if self.r1_gamma > 0:
+                    r1_penalty = compute_r1_penalty(self.discriminator, frame2)
+                    loss_d = loss_d + (self.r1_gamma / 2) * r1_penalty
+                    losses['r1_penalty'] = r1_penalty.item()
+                
+                if self.r2_gamma > 0:
+                    r2_penalty = compute_r2_penalty(self.discriminator, fake_frame.detach())
+                    loss_d = loss_d + (self.r2_gamma / 2) * r2_penalty
+                    losses['r2_penalty'] = r2_penalty.item()
                 
                 self.scaler.scale(loss_d).backward()
             
@@ -487,7 +517,7 @@ class Trainer:
         if self._accum_counter == 0:
             self.optimizer_g.zero_grad()
         
-        with torch.amp.autocast('cuda', enabled=self.use_amp):
+        with torch.amp.autocast('cuda', enabled=self.use_amp, dtype=self.amp_dtype):
             # Forward pass
             output = self.generator(frame1, frame3)
             fake_frame = output['output']
@@ -499,10 +529,19 @@ class Trainer:
             
             # GAN loss (fool discriminator) - only in Phase 2
             if gan_active:
-                pred_fake = self.discriminator(fake_frame)
-                loss_g_gan = self.gan_loss(
-                    pred_fake, is_real=True, for_discriminator=False
-                )
+                pred_fake_g = self.discriminator(fake_frame)
+                if self.gan_loss.is_relativistic:
+                    # Relativistic: G needs D(real) for comparison
+                    with torch.no_grad():
+                        pred_real_g = self.discriminator(frame2)
+                    loss_g_gan = self.gan_loss(
+                        pred_real_g, pred_other=pred_fake_g,
+                        for_discriminator=False,
+                    )
+                else:
+                    loss_g_gan = self.gan_loss(
+                        pred_fake_g, is_real=True, for_discriminator=False
+                    )
                 loss_g = loss_vfi + self.gan_weight * loss_g_gan
             else:
                 loss_g_gan = torch.tensor(0.0)
@@ -758,15 +797,21 @@ class Trainer:
                             frame3 = batch['frame3'].to(self.device)
                             
                             self.optimizer_d.zero_grad()
-                            with torch.amp.autocast('cuda', enabled=self.use_amp):
+                            with torch.amp.autocast('cuda', enabled=self.use_amp, dtype=self.amp_dtype):
                                 with torch.no_grad():
                                     output = self.generator(frame1, frame3)
                                     fake_frame = output['output']
                                 pred_real = self.discriminator(frame2)
-                                loss_d_real = self.gan_loss(pred_real, is_real=True)
                                 pred_fake = self.discriminator(fake_frame.detach())
-                                loss_d_fake = self.gan_loss(pred_fake, is_real=False)
-                                loss_d = (loss_d_real + loss_d_fake) * 0.5
+                                if self.gan_loss.is_relativistic:
+                                    loss_d = self.gan_loss(
+                                        pred_real, pred_other=pred_fake,
+                                        for_discriminator=True,
+                                    )
+                                else:
+                                    loss_d_real = self.gan_loss(pred_real, is_real=True)
+                                    loss_d_fake = self.gan_loss(pred_fake, is_real=False)
+                                    loss_d = (loss_d_real + loss_d_fake) * 0.5
                             
                             self.scaler.scale(loss_d).backward()
                             if self.grad_clip > 0:
