@@ -103,9 +103,10 @@ class Trainer:
         # Losses
         self.vfi_loss = VFILoss(
             l1_weight=config.get('l1_weight', 1.0),
-            perceptual_weight=config.get('perceptual_weight', 0.1),
+            census_weight=config.get('census_weight', 1.0),
+            perceptual_weight=config.get('perceptual_weight', 0.0),
             edge_weight=config.get('edge_weight', 0.5),
-            edge_multiplier=config.get('edge_multiplier', 10.0),  # Higher = sharper edges
+            edge_multiplier=config.get('edge_multiplier', 10.0),
         ).to(self.device)
         
         self.gan_loss = GANLoss(
@@ -600,6 +601,7 @@ class Trainer:
             scene_cut_rate = scene_cuts.float().mean().item()
         
         losses['g_l1'] = vfi_components['l1'].item()
+        losses['g_census'] = vfi_components['census'].item()
         losses['g_perceptual'] = vfi_components['perceptual'].item()
         losses['g_edge'] = vfi_components['edge'].item()
         losses['g_gan'] = loss_g_gan.item()

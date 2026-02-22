@@ -1,6 +1,6 @@
 """Training infrastructure components."""
 
-from .losses import VFILoss, PerceptualLoss, EdgeWeightedL1Loss
+from .losses import VFILoss, PerceptualLoss, EdgeWeightedL1Loss, CharbonnierLoss, CensusLoss
 from .discriminator import PatchDiscriminator
 
 __all__ = [

@@ -28,11 +28,12 @@ weight_decay: 0.01       # AdamW weight decay
 # Gradient clipping
 grad_clip: 1.0           # Clip gradients to prevent explosion (was inf)
 
-# Loss weights
-l1_weight: 1.5           # Sweep winner: balanced with perceptual (was 2.0)
-perceptual_weight: 0.1   # Sweep winner: higher perceptual actually helps PSNR (was 0.05)
-edge_weight: 1.0         # Edge-weighted L1 loss (doubled for sharper edges)
-edge_multiplier: 20.0    # Edge pixel weight (doubled from 10)
+# Loss weights (RIFE/IFRNet-inspired recipe)
+l1_weight: 1.0           # Charbonnier loss (replaces L1 — differentiable at zero)
+census_weight: 1.0        # Census structural loss (illumination-invariant, NEW)
+perceptual_weight: 0.0    # DISABLED for Phase 1 (VGG perceptual hurts PSNR convergence)
+edge_weight: 0.5          # Edge-weighted L1 (reduced — Charbonnier handles edges better)
+edge_multiplier: 10.0     # Edge pixel weight (reduced from 20)
 gan_weight: 0.005        # Lower GAN weight for Phase 2 fine-tuning
 
 # GAN configuration — R3GAN-inspired (arXiv 2501.05441)
