@@ -3,11 +3,34 @@ AdaCoF (Adaptive Collaboration of Flows) for foreground/character motion.
 
 Predicts per-pixel K×K sampling kernels for deformable motion estimation,
 handling non-linear animation motions like squash and stretch.
+
+v2: Full-resolution feature path, K=5 (25 taps), bicubic sampling.
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+class FullResEncoder(nn.Module):
+    """
+    Lightweight full-resolution feature extractor.
+    
+    Provides sharp pixel-level detail to complement the downsampled
+    FPN features. Runs at full input resolution with no downsampling.
+    """
+    
+    def __init__(self, in_channels: int = 3, out_channels: int = 16):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 3, padding=1),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Conv2d(out_channels, out_channels, 3, padding=1),
+            nn.LeakyReLU(0.1, inplace=True),
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.conv(x)
 
 
 class AdaCoFKernelPredictor(nn.Module):
@@ -26,7 +49,7 @@ class AdaCoFKernelPredictor(nn.Module):
     def __init__(
         self,
         in_channels: int,
-        kernel_size: int = 7,
+        kernel_size: int = 5,
     ):
         super().__init__()
         self.kernel_size = kernel_size
@@ -102,13 +125,14 @@ class AdaCoFKernelPredictor(nn.Module):
 
 class AdaCoFSampler(nn.Module):
     """
-    Samples pixels using AdaCoF kernels.
+    Samples pixels using AdaCoF kernels with bicubic interpolation.
     
     For each output pixel, samples K×K locations from input
-    and combines them using predicted weights.
+    and combines them using predicted weights. Uses bicubic sampling
+    for sharper interpolation compared to bilinear.
     """
     
-    def __init__(self, kernel_size: int = 7):
+    def __init__(self, kernel_size: int = 5):
         super().__init__()
         self.kernel_size = kernel_size
         self.k_squared = kernel_size * kernel_size
@@ -164,11 +188,11 @@ class AdaCoFSampler(nn.Module):
                 [sample_x_norm, sample_y_norm], dim=-1
             ).squeeze(1)  # (B, H, W, 2)
             
-            # Sample
+            # Sample with bicubic interpolation for sharper results
             sampled = F.grid_sample(
                 image,
                 grid_sample,
-                mode='bilinear',
+                mode='bicubic',
                 padding_mode='border',
                 align_corners=False,
             )  # (B, C, H, W)
@@ -186,22 +210,34 @@ class AdaCoFNet(nn.Module):
     Predicts per-pixel adaptive kernels for sampling from both
     input frames, handling squash/stretch and non-linear motion.
     
+    v2: Includes full-resolution feature path for sharp detail preservation.
+    
     Args:
         feat_channels: Feature channels at each scale
-        kernel_size: AdaCoF kernel size (default K=7)
+        kernel_size: AdaCoF kernel size (default K=5)
+        fullres_channels: Channels for the full-resolution feature encoder
     """
     
     def __init__(
         self,
         feat_channels: list[int] = [32, 64, 128, 128],
-        kernel_size: int = 7,
+        kernel_size: int = 5,
+        fullres_channels: int = 16,
     ):
         super().__init__()
         self.kernel_size = kernel_size
         
-        # Use finest features for per-pixel prediction
-        # Concatenate feat1, feat2, and correlation
-        in_channels = feat_channels[0] * 2 + 81  # 81 = corr channels
+        # Full-resolution feature encoder (no downsampling)
+        self.fullres_enc = FullResEncoder(
+            in_channels=3, out_channels=fullres_channels
+        )
+        
+        # Input channels: FPN feat1 + FPN feat2 + correlation + fullres1 + fullres2
+        in_channels = (
+            feat_channels[0] * 2  # FPN features from both frames
+            + 81                   # correlation volume
+            + fullres_channels * 2 # full-res features from both frames
+        )
         
         # Kernel predictor for sampling from frame1
         self.kernel_pred_1 = AdaCoFKernelPredictor(in_channels, kernel_size)
@@ -248,15 +284,19 @@ class AdaCoFNet(nn.Module):
         f2 = feat2[0]
         c = corr[0]
         
-        # Upsample features to input resolution if needed
+        # Upsample FPN features to input resolution if needed
         h, w = frame1.shape[2:]
         if f1.shape[2] != h or f1.shape[3] != w:
             f1 = F.interpolate(f1, size=(h, w), mode='bilinear', align_corners=False)
             f2 = F.interpolate(f2, size=(h, w), mode='bilinear', align_corners=False)
             c = F.interpolate(c, size=(h, w), mode='bilinear', align_corners=False)
         
-        # Concatenate features
-        combined = torch.cat([f1, f2, c], dim=1)
+        # Extract full-resolution features (sharp pixel detail)
+        fr1 = self.fullres_enc(frame1)  # (B, fullres_ch, H, W)
+        fr2 = self.fullres_enc(frame2)  # (B, fullres_ch, H, W)
+        
+        # Concatenate all features
+        combined = torch.cat([f1, f2, c, fr1, fr2], dim=1)
         
         # Predict kernels for both frames
         offsets1, weights1 = self.kernel_pred_1(combined)

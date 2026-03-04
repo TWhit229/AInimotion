@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 
 class ConvBlock(nn.Module):
-    """Basic conv-bn-relu block."""
+    """Basic conv-gn-relu block."""
     
     def __init__(
         self,
@@ -25,11 +25,11 @@ class ConvBlock(nn.Module):
             in_channels, out_channels, kernel_size, 
             stride=stride, padding=padding, bias=False
         )
-        self.bn = nn.BatchNorm2d(out_channels)
+        self.gn = nn.GroupNorm(num_groups=min(32, out_channels), num_channels=out_channels)
         self.relu = nn.LeakyReLU(0.1, inplace=True)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.relu(self.bn(self.conv(x)))
+        return self.relu(self.gn(self.conv(x)))
 
 
 class ResBlock(nn.Module):
@@ -39,13 +39,13 @@ class ResBlock(nn.Module):
         super().__init__()
         self.conv1 = ConvBlock(channels, channels)
         self.conv2 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(channels)
+        self.gn2 = nn.GroupNorm(num_groups=min(32, channels), num_channels=channels)
         self.relu = nn.LeakyReLU(0.1, inplace=True)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = x
         out = self.conv1(x)
-        out = self.bn2(self.conv2(out))
+        out = self.gn2(self.conv2(out))
         return self.relu(out + residual)
 
 

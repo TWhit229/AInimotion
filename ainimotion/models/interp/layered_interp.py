@@ -2,6 +2,8 @@
 LayeredInterpolator - Main model combining all components.
 
 Orchestrates: FPN → Scene Gate → Background/Foreground paths → Compositor
+
+v2: Occlusion-aware BG, full-res FG with K=5 bicubic, deeper refinement.
 """
 
 import torch
@@ -36,7 +38,7 @@ class LayeredInterpolator(nn.Module):
     def __init__(
         self,
         base_channels: int = 32,
-        kernel_size: int = 7,
+        kernel_size: int = 5,
         grid_size: int = 8,
         use_refinement: bool = True,
     ):
@@ -193,7 +195,7 @@ def build_model(
     
     model = LayeredInterpolator(
         base_channels=config.get('base_channels', 32),
-        kernel_size=config.get('kernel_size', 7),
+        kernel_size=config.get('kernel_size', 5),
         grid_size=config.get('grid_size', 8),
         use_refinement=config.get('use_refinement', True),
     )

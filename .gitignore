@@ -185,3 +185,6 @@ check_sweep.py
 *.snm
 *.vrb
 *.synctex.gz
+
+training_data/
+

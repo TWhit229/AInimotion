@@ -70,6 +70,7 @@ class BackgroundFlowNet(nn.Module):
     
     Estimates camera motion (pans, zooms, rotations) as a grid of
     local affine transformations, then interpolates to full resolution.
+    Uses occlusion-aware stitching to avoid blur from naive averaging.
     
     Args:
         feat_channels: List of feature channels at each FPN scale
@@ -99,6 +100,21 @@ class BackgroundFlowNet(nn.Module):
         )
         nn.init.zeros_(self.refiner[-1].weight)
         nn.init.zeros_(self.refiner[-1].bias)
+        
+        # Occlusion-aware blending: predict per-pixel weight from
+        # warp residuals + flow magnitude → which frame is more reliable
+        # Input: |warp1 - warp2| (3ch) + flow_mag (2ch) = 5ch
+        self.occ_predictor = nn.Sequential(
+            nn.Conv2d(5, 32, 3, padding=1),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Conv2d(32, 16, 3, padding=1),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Conv2d(16, 1, 3, padding=1),
+            nn.Sigmoid(),
+        )
+        # Initialize to 0.5 (equal blend) so initial behavior is stable
+        nn.init.zeros_(self.occ_predictor[-2].weight)
+        nn.init.zeros_(self.occ_predictor[-2].bias)
     
     def forward(
         self,
@@ -258,16 +274,17 @@ class BackgroundFlowNet(nn.Module):
         flow_2to1: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Stitch background from both frames to fill dis-occluded areas.
+        Stitch background from both frames using occlusion-aware blending.
         
-        Warps both frames to t=0.5 and blends based on which pixels
-        are more reliable (less occluded).
+        Warps both frames to t=0.5, then uses a learned occlusion predictor
+        to determine per-pixel blend weights based on warp disagreement
+        and flow magnitude. Avoids ghosting from naive averaging.
         
         Args:
             frame1: (B, C, H, W) first frame
             frame2: (B, C, H, W) second frame
-            flow_1to2: (B, 2, H, W) flow from frame1 to interpolated time
-            flow_2to1: (B, 2, H, W) flow from frame2 to interpolated time
+            flow_1to2: (B, 2, H, W) flow from frame1 to frame2
+            flow_2to1: (B, 2, H, W) flow from frame2 to frame1
             
         Returns:
             (B, C, H, W) stitched background canvas
@@ -276,5 +293,16 @@ class BackgroundFlowNet(nn.Module):
         warp1 = self.warp_with_flow(frame1, flow_1to2 * 0.5)
         warp2 = self.warp_with_flow(frame2, flow_2to1 * 0.5)
         
-        # Simple 50/50 blend (can be improved with occlusion reasoning)
-        return (warp1 + warp2) / 2
+        # Compute occlusion cues
+        warp_diff = torch.abs(warp1 - warp2)  # (B, 3, H, W)
+        flow_mag = torch.cat([
+            flow_1to2.norm(dim=1, keepdim=True),
+            flow_2to1.norm(dim=1, keepdim=True),
+        ], dim=1)  # (B, 2, H, W)
+        
+        # Predict per-pixel blend weight (Z → 1 means use warp1)
+        occ_input = torch.cat([warp_diff, flow_mag], dim=1)  # (B, 5, H, W)
+        Z = self.occ_predictor(occ_input)  # (B, 1, H, W)
+        
+        return Z * warp1 + (1 - Z) * warp2
+

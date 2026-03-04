@@ -346,6 +346,46 @@ class EdgeWeightedL1Loss(nn.Module):
         return weighted_loss
 
 
+class LaplacianFrequencyLoss(nn.Module):
+    """
+    Frequency loss using Laplacian filter.
+    
+    Penalizes differences in high-frequency content (edges, fine details)
+    between predicted and target images. Specifically targets edge sharpness.
+    
+    Uses a 3x3 Laplacian kernel to extract high frequency components,
+    then computes Charbonnier loss between them.
+    """
+    
+    def __init__(self):
+        super().__init__()
+        # Laplacian kernel for high-frequency extraction
+        kernel = torch.tensor([
+            [0,  1, 0],
+            [1, -4, 1],
+            [0,  1, 0],
+        ], dtype=torch.float32).view(1, 1, 3, 3)
+        self.register_buffer('laplacian', kernel)
+    
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute frequency loss between pred and target."""
+        # Convert to grayscale
+        pred_gray = 0.299 * pred[:, 0:1] + 0.587 * pred[:, 1:2] + 0.114 * pred[:, 2:3]
+        target_gray = 0.299 * target[:, 0:1] + 0.587 * target[:, 1:2] + 0.114 * target[:, 2:3]
+        
+        # Extract high frequencies via Laplacian
+        pred_hf = F.conv2d(pred_gray, self.laplacian, padding=1)
+        target_hf = F.conv2d(target_gray, self.laplacian, padding=1)
+        
+        # Charbonnier loss on high frequencies
+        diff = pred_hf - target_hf
+        return torch.sqrt(diff * diff + 1e-6).mean()
+
+
 class VFILoss(nn.Module):
     """
     Combined loss for VFI training (RIFE/IFRNet-inspired).
@@ -355,6 +395,7 @@ class VFILoss(nn.Module):
         - Census structural loss (illumination-invariant)
         - VGG perceptual loss (optional, disabled by default)
         - Edge-weighted L1 loss
+        - Laplacian frequency loss (targets edge sharpness)
         - GAN loss (added externally in train.py)
     
     Args:
@@ -363,6 +404,7 @@ class VFILoss(nn.Module):
         perceptual_weight: Weight for VGG perceptual loss (0 = disabled)
         edge_weight: Weight for edge-weighted L1 loss
         edge_multiplier: Multiplier for edge pixels in edge loss
+        freq_weight: Weight for Laplacian frequency loss
     """
     
     def __init__(
@@ -372,6 +414,7 @@ class VFILoss(nn.Module):
         perceptual_weight: float = 0.0,
         edge_weight: float = 0.5,
         edge_multiplier: float = 10.0,
+        freq_weight: float = 0.0,
     ):
         super().__init__()
         
@@ -379,11 +422,13 @@ class VFILoss(nn.Module):
         self.census_weight = census_weight
         self.perceptual_weight = perceptual_weight
         self.edge_weight = edge_weight
+        self.freq_weight = freq_weight
         
         # Component losses
         self.reconstruction_loss = CharbonnierLoss(eps=1e-3)
         self.census_loss = CensusLoss(patch_size=7) if census_weight > 0 else None
         self.edge_loss = EdgeWeightedL1Loss(edge_weight=edge_multiplier)
+        self.freq_loss = LaplacianFrequencyLoss() if freq_weight > 0 else None
         
         # Only load VGG if perceptual loss is actually used (saves ~500MB VRAM)
         if perceptual_weight > 0:
@@ -428,12 +473,19 @@ class VFILoss(nn.Module):
         edge = self.edge_loss(pred, target)
         total = total + self.edge_weight * edge
         
+        # Laplacian frequency loss (sharpness)
+        freq = torch.tensor(0.0, device=pred.device)
+        if self.freq_loss is not None and self.freq_weight > 0:
+            freq = self.freq_loss(pred, target)
+            total = total + self.freq_weight * freq
+        
         if return_components:
             components = {
                 'l1': recon,       # Named 'l1' for logging compatibility
                 'census': census,
                 'perceptual': perceptual,
                 'edge': edge,
+                'freq': freq,
                 'total': total,
             }
             return total, components

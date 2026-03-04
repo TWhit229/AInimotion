@@ -2,7 +2,9 @@
 Compositor module for layer blending.
 
 Combines background canvas and foreground character layers
-using a learned soft alpha mask.
+using a learned soft alpha mask, with a strong refinement network.
+
+v2: Deeper refinement U-Net with residual blocks and full intermediate context.
 """
 
 import torch
@@ -49,42 +51,77 @@ class AlphaMaskPredictor(nn.Module):
         return self.conv(features)
 
 
+class ResidualBlock(nn.Module):
+    """Residual block with two conv layers and skip connection."""
+    
+    def __init__(self, channels: int):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(channels, channels, 3, padding=1),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Conv2d(channels, channels, 3, padding=1),
+            nn.LeakyReLU(0.1, inplace=True),
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x + self.conv(x)
+
+
 class RefinementNet(nn.Module):
     """
-    Small U-Net for final refinement of composited output.
+    Deeper U-Net with residual blocks for final refinement.
     
-    Cleans up blending artifacts and sharpens details.
+    Takes the full context (composite, both input frames, alpha mask,
+    background, foreground) and learns to clean up blending artifacts,
+    sharpen edges, and correct color.
+    
+    v2: 4-level U-Net (32→64→128→256) with residual blocks, 16ch input.
     """
     
-    def __init__(self, in_channels: int = 3):
+    def __init__(self, in_channels: int = 16):
         super().__init__()
         
         # Encoder
         self.enc1 = nn.Sequential(
             nn.Conv2d(in_channels, 32, 3, padding=1),
             nn.LeakyReLU(0.1, inplace=True),
+            ResidualBlock(32),
         )
         self.enc2 = nn.Sequential(
             nn.Conv2d(32, 64, 3, stride=2, padding=1),
             nn.LeakyReLU(0.1, inplace=True),
+            ResidualBlock(64),
         )
         self.enc3 = nn.Sequential(
             nn.Conv2d(64, 128, 3, stride=2, padding=1),
             nn.LeakyReLU(0.1, inplace=True),
+            ResidualBlock(128),
+        )
+        self.enc4 = nn.Sequential(
+            nn.Conv2d(128, 256, 3, stride=2, padding=1),
+            nn.LeakyReLU(0.1, inplace=True),
+            ResidualBlock(256),
         )
         
         # Decoder
-        self.dec3 = nn.Sequential(
-            nn.Conv2d(128, 64, 3, padding=1),
+        self.dec4 = nn.Sequential(
+            nn.Conv2d(256, 128, 3, padding=1),
             nn.LeakyReLU(0.1, inplace=True),
+        )
+        self.dec3 = nn.Sequential(
+            nn.Conv2d(256, 64, 3, padding=1),  # 128 + 128 skip
+            nn.LeakyReLU(0.1, inplace=True),
+            ResidualBlock(64),
         )
         self.dec2 = nn.Sequential(
             nn.Conv2d(128, 32, 3, padding=1),  # 64 + 64 skip
             nn.LeakyReLU(0.1, inplace=True),
+            ResidualBlock(32),
         )
         self.dec1 = nn.Sequential(
-            nn.Conv2d(64, 32, 3, padding=1),  # 32 + 32 skip
+            nn.Conv2d(64, 32, 3, padding=1),   # 32 + 32 skip
             nn.LeakyReLU(0.1, inplace=True),
+            ResidualBlock(32),
             nn.Conv2d(32, 3, 3, padding=1),
         )
     
@@ -93,21 +130,25 @@ class RefinementNet(nn.Module):
         Refine composited image.
         
         Args:
-            x: (B, 9, H, W) concatenated [composite, frame1, frame2]
+            x: (B, 16, H, W) concatenated context
+               [composite(3), frame1(3), frame3(3), alpha(1), background(3), foreground(3)]
             
         Returns:
-            (B, 3, H, W) refined output (residual added to composite portion)
+            (B, 3, H, W) refined output (residual added to composite)
         """
         # Extract composite for residual connection
-        composite = x[:, :3]  # First 3 channels
+        composite = x[:, :3]
         
         # Encoder
         e1 = self.enc1(x)      # (B, 32, H, W)
         e2 = self.enc2(e1)     # (B, 64, H/2, W/2)
         e3 = self.enc3(e2)     # (B, 128, H/4, W/4)
+        e4 = self.enc4(e3)     # (B, 256, H/8, W/8)
         
         # Decoder with skip connections
-        d3 = self.dec3(e3)     # (B, 64, H/4, W/4)
+        d4 = self.dec4(e4)     # (B, 128, H/8, W/8)
+        d4_up = F.interpolate(d4, size=e3.shape[2:], mode='bilinear', align_corners=False)
+        d3 = self.dec3(torch.cat([d4_up, e3], dim=1))  # (B, 64, H/4, W/4)
         d3_up = F.interpolate(d3, size=e2.shape[2:], mode='bilinear', align_corners=False)
         d2 = self.dec2(torch.cat([d3_up, e2], dim=1))  # (B, 32, H/2, W/2)
         d2_up = F.interpolate(d2, size=e1.shape[2:], mode='bilinear', align_corners=False)
@@ -121,7 +162,9 @@ class Compositor(nn.Module):
     """
     Layer compositor for combining background and foreground.
     
-    Uses soft alpha blending with optional refinement.
+    Uses soft alpha blending with strong refinement.
+    
+    v2: Refinement takes full context (16 channels) for better correction.
     
     Args:
         feat_channels: Feature channels at each FPN scale
@@ -142,8 +185,9 @@ class Compositor(nn.Module):
         self.use_refinement = use_refinement
         
         if use_refinement:
-            # Input to refinement: composite + both original frames
-            self.refinement = RefinementNet(in_channels=9)  # 3*3 = 9
+            # Input to refinement: composite(3) + frame1(3) + frame3(3)
+            #                     + alpha(1) + background(3) + foreground(3) = 16
+            self.refinement = RefinementNet(in_channels=16)
     
     def forward(
         self,
@@ -190,9 +234,16 @@ class Compositor(nn.Module):
         # Alpha blend layers
         composite = alpha * foreground + (1 - alpha) * background
         
-        # Optional refinement
+        # Refinement with full context
         if self.use_refinement and frame1 is not None and frame2 is not None:
-            refine_input = torch.cat([composite, frame1, frame2], dim=1)
+            refine_input = torch.cat([
+                composite,   # 3 ch
+                frame1,      # 3 ch
+                frame2,      # 3 ch
+                alpha,       # 1 ch
+                background,  # 3 ch
+                foreground,  # 3 ch
+            ], dim=1)  # 16 ch total
             output = self.refinement(refine_input)
         else:
             output = composite

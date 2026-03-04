@@ -29,6 +29,9 @@ class TripletDataset(Dataset):
         augment: Whether to apply training augmentations (crop, flip, etc.)
         crop_size: Size of random crops during augmentation (H, W)
         max_samples: Maximum number of triplets to use (None = use all)
+        difficulty_file: Path to difficulty_scores.json (from precompute_difficulty.py)
+        min_motion: Minimum motion threshold (exclude trivial samples)
+        max_motion: Maximum motion threshold (exclude extreme/scene-cut samples)
     """
     
     def __init__(
@@ -39,6 +42,9 @@ class TripletDataset(Dataset):
         crop_size: tuple[int, int] = (256, 256),
         max_samples: int | None = None,
         temporal_augment: bool = True,  # Swap frame1/frame3 for 2x data
+        difficulty_file: str | Path | None = None,
+        min_motion: float = 0.0,
+        max_motion: float = 1.0,
     ):
         self.root_dir = Path(root_dir)
         self.transform = transform
@@ -46,16 +52,48 @@ class TripletDataset(Dataset):
         self.crop_size = crop_size
         self.temporal_augment = temporal_augment
         
-        # Find all triplet directories (support both PNG and JPEG)
+        # Find all triplet directories (support both naming conventions and formats)
+        # Our format: f1.jpg/f1.png  |  ATD-12K format: frame1.jpg/frame1.png
         all_triplet_dirs = sorted([
             d for d in self.root_dir.iterdir()
             if d.is_dir() and (
-                (d / "f1.png").exists() or (d / "f1.jpg").exists()
+                (d / "f1.png").exists() or (d / "f1.jpg").exists() or
+                (d / "frame1.png").exists() or (d / "frame1.jpg").exists()
             )
         ])
         
         if len(all_triplet_dirs) == 0:
             raise ValueError(f"No triplets found in {root_dir}")
+        
+        total_before = len(all_triplet_dirs)
+        
+        # Filter by difficulty if scores are available
+        if difficulty_file is not None:
+            difficulty_file = Path(difficulty_file)
+            if difficulty_file.exists():
+                import json
+                with open(difficulty_file) as f:
+                    self.difficulty_scores = json.load(f)
+                
+                # Filter by motion range
+                filtered = []
+                for d in all_triplet_dirs:
+                    score = self.difficulty_scores.get(d.name, None)
+                    if score is not None and min_motion <= score <= max_motion:
+                        filtered.append(d)
+                
+                skipped = total_before - len(filtered)
+                print(
+                    f"Difficulty filter [{min_motion:.3f}, {max_motion:.3f}]: "
+                    f"{len(filtered):,} kept, {skipped:,} filtered "
+                    f"({skipped/total_before*100:.1f}% removed)"
+                )
+                all_triplet_dirs = filtered
+            else:
+                print(f"WARNING: difficulty_file not found: {difficulty_file}")
+                self.difficulty_scores = {}
+        else:
+            self.difficulty_scores = {}
         
         # Randomly sample if max_samples is set
         if max_samples is not None and max_samples < len(all_triplet_dirs):
@@ -140,11 +178,24 @@ class TripletDataset(Dataset):
         try:
             triplet_dir = self.triplet_dirs[idx]
             
-            # Load images (auto-detect PNG or JPEG)
-            ext = "png" if (triplet_dir / "f1.png").exists() else "jpg"
-            f1 = self._load_image(triplet_dir / f"f1.{ext}")
-            f2 = self._load_image(triplet_dir / f"f2.{ext}")
-            f3 = self._load_image(triplet_dir / f"f3.{ext}")
+            # Load images (auto-detect naming convention and format)
+            # Our format: f1.jpg/f1.png  |  ATD-12K format: frame1.jpg/frame1.png
+            if (triplet_dir / "f1.png").exists():
+                f1 = self._load_image(triplet_dir / "f1.png")
+                f2 = self._load_image(triplet_dir / "f2.png")
+                f3 = self._load_image(triplet_dir / "f3.png")
+            elif (triplet_dir / "f1.jpg").exists():
+                f1 = self._load_image(triplet_dir / "f1.jpg")
+                f2 = self._load_image(triplet_dir / "f2.jpg")
+                f3 = self._load_image(triplet_dir / "f3.jpg")
+            elif (triplet_dir / "frame1.png").exists():
+                f1 = self._load_image(triplet_dir / "frame1.png")
+                f2 = self._load_image(triplet_dir / "frame2.png")
+                f3 = self._load_image(triplet_dir / "frame3.png")
+            else:  # frame1.jpg (ATD-12K train set)
+                f1 = self._load_image(triplet_dir / "frame1.jpg")
+                f2 = self._load_image(triplet_dir / "frame2.jpg")
+                f3 = self._load_image(triplet_dir / "frame3.jpg")
             
         except Exception as e:
             # If corrupted, return a random different sample
@@ -246,6 +297,9 @@ def create_dataloader(
     prefetch_factor: int = 2,
     persistent_workers: bool = False,
     max_samples: int | None = None,
+    difficulty_file: str | Path | None = None,
+    min_motion: float = 0.0,
+    max_motion: float = 1.0,
 ) -> torch.utils.data.DataLoader:
     """
     Create a DataLoader for training.
@@ -260,6 +314,9 @@ def create_dataloader(
         prefetch_factor: Number of batches to prefetch per worker
         persistent_workers: Keep workers alive between epochs (faster)
         max_samples: Maximum number of triplets to use (None = use all)
+        difficulty_file: Path to difficulty_scores.json
+        min_motion: Min motion threshold for filtering
+        max_motion: Max motion threshold for filtering
         
     Returns:
         PyTorch DataLoader
@@ -269,6 +326,9 @@ def create_dataloader(
         augment=augment,
         crop_size=crop_size,
         max_samples=max_samples,
+        difficulty_file=difficulty_file,
+        min_motion=min_motion,
+        max_motion=max_motion,
     )
     
     return torch.utils.data.DataLoader(

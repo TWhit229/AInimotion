@@ -107,6 +107,7 @@ class Trainer:
             perceptual_weight=config.get('perceptual_weight', 0.0),
             edge_weight=config.get('edge_weight', 0.5),
             edge_multiplier=config.get('edge_multiplier', 10.0),
+            freq_weight=config.get('freq_weight', 0.0),
         ).to(self.device)
         
         self.gan_loss = GANLoss(
@@ -163,6 +164,12 @@ class Trainer:
         self.best_psnr = 0.0
         self.epochs_without_improvement = 0
         
+        # Curriculum learning: progressively increase difficulty
+        # Each stage: {epoch: N, min_motion: float, max_motion: float}
+        self.curriculum = config.get('curriculum', None)
+        self._current_curriculum_stage = -1  # Track which stage we're in
+        self._difficulty_file = config.get('difficulty_file', None)
+        
         # Optimizers
         self.optimizer_g = torch.optim.AdamW(
             self.generator.parameters(),
@@ -208,16 +215,22 @@ class Trainer:
         if self.use_wandb:
             import wandb
             self.wandb = wandb
-            wandb_id = config.get('wandb_run_id', None)
-            wandb.init(
-                project=config.get('wandb_project', 'AInimotion'),
-                name=config.get('wandb_run_name', f"train_{datetime.now().strftime('%m%d_%H%M')}"),
-                config=config,
-                id=wandb_id,
-                resume='must' if wandb_id else 'allow',
-            )
-            wandb.watch(self.generator, log='gradients', log_freq=500)
-            print(f"  [OK] W&B logging enabled: {wandb.run.url}")
+            # Check if a run is already active (e.g. from W&B sweep agent)
+            if wandb.run is not None:
+                # Reuse existing run — just update config
+                wandb.config.update(config, allow_val_change=True)
+                print(f"  [OK] W&B logging enabled (existing run): {wandb.run.url}")
+            else:
+                wandb_id = config.get('wandb_run_id', None)
+                wandb.init(
+                    project=config.get('wandb_project', 'AInimotion'),
+                    name=config.get('wandb_run_name', f"train_{datetime.now().strftime('%m%d_%H%M')}"),
+                    config=config,
+                    id=wandb_id,
+                    resume='must' if wandb_id else 'allow',
+                )
+                wandb.watch(self.generator, log='gradients', log_freq=500)
+                print(f"  [OK] W&B logging enabled: {wandb.run.url}")
         else:
             self.wandb = None
         
@@ -444,8 +457,13 @@ class Trainer:
                     d_acc_fake = (pred_fake.mean() < 0.5).float().item()
                     d_acc = (d_acc_real + d_acc_fake) / 2
                 
-                losses['d_real'] = loss_d_real.item()
-                losses['d_fake'] = loss_d_fake.item()
+                if self.gan_loss.is_relativistic:
+                    # Relativistic GAN produces a single combined loss
+                    losses['d_real'] = loss_d.item() / 2
+                    losses['d_fake'] = loss_d.item() / 2
+                else:
+                    losses['d_real'] = loss_d_real.item()
+                    losses['d_fake'] = loss_d_fake.item()
                 losses['d_total'] = loss_d.item()
                 losses['d_acc'] = d_acc
                 
@@ -720,8 +738,13 @@ class Trainer:
             print("\n\n[!]  Ctrl+C detected! Saving checkpoint...")
             self._interrupted = True
         
-        # Register signal handler
-        original_handler = signal.signal(signal.SIGINT, signal_handler)
+        # Register signal handler (only works in main thread)
+        original_handler = None
+        try:
+            original_handler = signal.signal(signal.SIGINT, signal_handler)
+        except ValueError:
+            # Not in main thread (e.g. W&B sweep agent) — skip signal handling
+            pass
         
         print(f"\n{'='*50}")
         print(f"Training started!")
@@ -747,6 +770,36 @@ class Trainer:
                 # Track current epoch for two-phase training
                 self.current_epoch = epoch
                 
+                # === Curriculum learning: adjust difficulty range ===
+                if self.curriculum and self._data_path:
+                    # Find which curriculum stage we should be in
+                    target_stage = 0
+                    for i, stage in enumerate(self.curriculum):
+                        if epoch >= stage.get('epoch', 0):
+                            target_stage = i
+                    
+                    if target_stage != self._current_curriculum_stage:
+                        stage = self.curriculum[target_stage]
+                        min_m = stage.get('min_motion', 0.0)
+                        max_m = stage.get('max_motion', 1.0)
+                        print(f"\n[>>] CURRICULUM STAGE {target_stage} (epoch {epoch}): motion [{min_m:.3f}, {max_m:.3f}]")
+                        self._current_curriculum_stage = target_stage
+                        
+                        # Rebuild dataloader with new difficulty range
+                        dataloader = create_dataloader(
+                            root_dir=self._data_path,
+                            batch_size=self.config.get('batch_size', 6),
+                            num_workers=self.config.get('num_workers', 4),
+                            crop_size=tuple(self.config.get('crop_size', [256, 256])),
+                            prefetch_factor=self.config.get('prefetch_factor', 2),
+                            persistent_workers=self.config.get('persistent_workers', False),
+                            max_samples=self.config.get('max_samples', None),
+                            difficulty_file=self._difficulty_file,
+                            min_motion=min_m,
+                            max_motion=max_m,
+                        )
+                        print(f"   Dataloader rebuilt: {len(dataloader.dataset):,} triplets, {len(dataloader)} batches/epoch")
+                
                 # Phase 2 activation: switch from reconstruction-only to GAN
                 if epoch == self.gan_start_epoch and self.gan_start_epoch > 0 and not self.gan_activated:
                     self.gan_activated = True
@@ -770,6 +823,9 @@ class Trainer:
                             prefetch_factor=self.config.get('prefetch_factor', 2),
                             persistent_workers=self.config.get('persistent_workers', False),
                             max_samples=self.config.get('max_samples', None),
+                            difficulty_file=self._difficulty_file,
+                            min_motion=self.curriculum[self._current_curriculum_stage].get('min_motion', 0.0) if self.curriculum and self._current_curriculum_stage >= 0 else 0.0,
+                            max_motion=self.curriculum[self._current_curriculum_stage].get('max_motion', 1.0) if self.curriculum and self._current_curriculum_stage >= 0 else 1.0,
                         )
                         print(f"   New dataloader: {len(dataloader)} batches/epoch")
                     
@@ -951,7 +1007,11 @@ class Trainer:
         
         finally:
             # Restore original signal handler
-            signal.signal(signal.SIGINT, original_handler)
+            if original_handler is not None:
+                try:
+                    signal.signal(signal.SIGINT, original_handler)
+                except ValueError:
+                    pass
             
             # Save final checkpoint
             if self._interrupted:
@@ -1175,6 +1235,24 @@ def main():
         torch.backends.cudnn.benchmark = True
         print("cuDNN benchmark enabled for optimal performance")
     
+    # Resolve difficulty file path (auto-detect in data dir if not specified)
+    difficulty_file = config.get('difficulty_file', None)
+    if difficulty_file is None:
+        auto_path = Path(args.data) / 'difficulty_scores.json'
+        if auto_path.exists():
+            difficulty_file = str(auto_path)
+            config['difficulty_file'] = difficulty_file
+            print(f"Auto-detected difficulty scores: {difficulty_file}")
+    
+    # Get initial curriculum motion range (stage 0)
+    curriculum = config.get('curriculum', None)
+    min_motion, max_motion = 0.0, 1.0
+    if curriculum and difficulty_file:
+        min_motion = curriculum[0].get('min_motion', 0.0)
+        max_motion = curriculum[0].get('max_motion', 1.0)
+        print(f"Curriculum learning enabled: {len(curriculum)} stages")
+        print(f"  Starting with motion range [{min_motion:.3f}, {max_motion:.3f}]")
+    
     # Create dataloader with optimizations
     dataloader = create_dataloader(
         root_dir=args.data,
@@ -1184,6 +1262,9 @@ def main():
         prefetch_factor=config.get('prefetch_factor', 2),
         persistent_workers=config.get('persistent_workers', False),
         max_samples=config.get('max_samples', None),
+        difficulty_file=difficulty_file,
+        min_motion=min_motion,
+        max_motion=max_motion,
     )
     
     print(f"Dataset size: {len(dataloader.dataset)} triplets")
