@@ -23,6 +23,8 @@ from tqdm import tqdm
 import yaml
 
 from ainimotion.models.interp import LayeredInterpolator
+from ainimotion.models.interp_v3 import LayeredInterpolatorV3
+from ainimotion.models.interp_v4 import LayeredInterpolatorV4
 from ainimotion.training.losses import VFILoss
 from ainimotion.training.discriminator import (
     PatchDiscriminator, GANLoss,
@@ -86,13 +88,35 @@ class Trainer:
         # Kill Steam, Discord, Chrome, etc. to free GPU memory
         free_gpu_memory()
         
-        # Build model
-        self.generator = LayeredInterpolator(
-            base_channels=config.get('base_channels', 32),
-            kernel_size=config.get('kernel_size', 7),
-            grid_size=config.get('grid_size', 8),
-            use_refinement=config.get('use_refinement', True),
-        ).to(self.device)
+        # Build model based on version
+        model_version = config.get('model_version', 'v2').lower()
+        if model_version == 'v4':
+            self.generator = LayeredInterpolatorV4(
+                base_channels=config.get('base_channels', 32),
+                kernel_size=config.get('kernel_size', 7),
+                grid_size=config.get('grid_size', 8),
+                use_refinement=config.get('use_refinement', True),
+                max_displacement=config.get('max_displacement', 6),
+                n_attn_layers=config.get('n_attn_layers', 1),
+                n_attn_points=config.get('n_attn_points', 9),
+            ).to(self.device)
+        elif model_version == 'v3':
+            self.generator = LayeredInterpolatorV3(
+                base_channels=config.get('base_channels', 32),
+                kernel_size=config.get('kernel_size', 7),
+                grid_size=config.get('grid_size', 8),
+                use_refinement=config.get('use_refinement', True),
+                max_displacement=config.get('max_displacement', 6),
+            ).to(self.device)
+        else:
+            self.generator = LayeredInterpolator(
+                base_channels=config.get('base_channels', 32),
+                kernel_size=config.get('kernel_size', 7),
+                grid_size=config.get('grid_size', 8),
+                use_refinement=config.get('use_refinement', True),
+            ).to(self.device)
+        
+        print(f"  [MODEL] Initialized {model_version.upper()} architecture")
         
         # Build discriminator
         self.discriminator = PatchDiscriminator(
