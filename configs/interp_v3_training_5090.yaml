@@ -15,8 +15,8 @@ disc_channels: 64        # Base discriminator channels
 
 # Training
 epochs: 300              # IFRNet trains 300 epochs on Vimeo-90K
-batch_size: 12           # Benchmark=20.3GB + ~5GB real overhead = ~25GB (safe for 31.5GB)
-num_workers: 12          # High parallelism for fast data loading
+batch_size: 8            # Reduced for safety (was 12)
+num_workers: 0           # Set to 0 to prevent Windows multiprocessing deadlock!
 crop_size: [256, 256]    # IFRNet uses 224; 256 is a good balance
 prefetch_factor: 4       # Prefetch batches per worker
 persistent_workers: true # Keep workers alive between epochs
@@ -46,9 +46,9 @@ r1_gamma: 10.0           # R1 gradient penalty on real data
 r2_gamma: 10.0           # R2 gradient penalty on fake data
 lr_g_phase2: 0.00003     # Lower lr_g when GAN activates
 
-# Phase 2 VRAM management (benchmarked: bs=12 → 28.6GB peak)
-phase2_batch_size: 10    # Benchmark=17GB + ~5GB overhead = ~22GB (GAN needs extra headroom)
-gradient_accumulation_steps: 1  # No accumulation needed at batch=12
+# Phase 2 VRAM management
+phase2_batch_size: 6     # Reduced for safety (GAN overhead)
+gradient_accumulation_steps: 2  # Accumulate to simulate bs=12
 
 # Mixed precision
 use_amp: true
