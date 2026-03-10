@@ -570,6 +570,12 @@ class Trainer:
                 fake_frame, frame2, return_components=True
             )
             
+            # Auxiliary synthesis loss (v4): directly supervise synthesis decoder
+            # Prevents routing collapse by ensuring fg_synth gets strong gradients
+            if 'fg_synth' in output:
+                synth_loss = F.l1_loss(output['fg_synth'], frame2)
+                loss_vfi = loss_vfi + 0.1 * synth_loss
+            
             # GAN loss (fool discriminator) - only in Phase 2
             if gan_active:
                 pred_fake_g = self.discriminator(fake_frame)
@@ -653,6 +659,11 @@ class Trainer:
         losses['scene_cut_rate'] = scene_cut_rate
         losses['lr'] = self.scheduler_g.get_last_lr()[0]
         losses['accum_step'] = int(should_step)  # 1 if optimizer stepped, 0 if accumulating
+        
+        # V4 routing diagnostics
+        if 'routing_map' in output:
+            losses['routing_mean'] = output['routing_map'].mean().item()
+            losses['routing_max'] = output['routing_map'].max().item()
         
         return losses
     
