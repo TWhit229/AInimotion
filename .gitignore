@@ -188,3 +188,11 @@ check_sweep.py
 
 training_data/
 
+
+Training/
+Training_val/
+check_*.py
+find_*.py
+smoke_test_*.py
+verify_*.py
+expand_wsl.txt

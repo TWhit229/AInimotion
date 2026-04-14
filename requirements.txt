@@ -1,0 +1,10 @@
+# AInimotion Linux/WSL Requirements
+torch>=2.2.0
+torchvision
+torchaudio
+pillow
+tqdm
+wandb
+pyyaml
+lpips
+triton

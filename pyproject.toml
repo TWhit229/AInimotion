@@ -20,14 +20,15 @@ dependencies = [
     "numpy",
     "tqdm",
     "pyyaml",
-    "tensorboard"
+    "tensorboard",
+    "wandb"
 ]
 
 [project.urls]
 Homepage = "https://github.com/TWhit229/AInimotion"
 
-[project.scripts]
-ainimotion = "ainimotion.cli.enhance:main"
+# [project.scripts]
+# CLI entry point removed — V5 uses scripts/train_v5.py directly
 
 [tool.setuptools.packages.find]
 where = ["."]

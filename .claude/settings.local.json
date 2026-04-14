@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -t wandb/*/logs/)",
+      "Bash(python:*)",
+      "Bash(tasklist)"
+    ]
+  }
+}

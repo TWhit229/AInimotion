@@ -1,0 +1,73 @@
+# V5 Training Configuration — RTX 5090 (32 GB VRAM)
+# VRAM Profile: BS=7 max at 256x256 (30.59 GB peak)
+# Using BS=6 for safety margin (AMP + optimizer states)
+# Target: Ubuntu + Triton backend for torch.compile speedups
+
+# Model
+model:
+  base_channels: 64
+  n_temporal_layers: 2
+  n_attn_heads: 4
+  window_size: 8
+  n_synth_layers: 2
+  n_synth_points: 9
+  max_offset: 32
+
+# Data
+data:
+  train_dir: "/home/travis/Training"
+  val_dir: "/home/travis/Training_val"
+  crop_size: 256
+  num_workers: 4  # WSL/Linux safenux (was 0 for Windows deadlock fix)
+  batch_size: 7
+  weighted_sampling: true
+
+# Training schedule (3 phases)
+training:
+  total_epochs: 800
+  
+  # Optimizer
+  optimizer: "adamw"
+  learning_rate: 3.0e-4
+  weight_decay: 1.0e-4
+  betas: [0.9, 0.999]
+  
+  # LR schedule
+  lr_scheduler: "cosine"
+  warmup_epochs: 10
+  min_lr: 1.0e-6
+  
+  # Mixed precision
+  amp: true
+  grad_clip: 1.0
+  
+  # Gradient accumulation (effective batch = batch_size × accum_steps)
+  gradient_accumulation_steps: 1  # Phase 1-2 (effective BS=6)
+  # Phase 3 (GAN): reduce batch_size to 4, accum_steps=2 (effective BS=8)
+  
+  # Checkpointing
+  save_every_n_epochs: 1
+  val_every_n_epochs: 5
+  keep_last_n_checkpoints: 5
+
+# Loss weights
+loss:
+  charbonnier_weight: 1.0
+  edge_weight: 0.5
+  fft_weight_max: 1.0
+  gan_weight_max: 0.1
+  high_freq_weight: 1.5
+
+# GAN (Phase 3 only, epochs 500+)
+discriminator:
+  base_channels: 64
+  lr: 1.0e-4
+  r1_weight: 10.0
+  r1_every_n_steps: 16  # Apply R1 penalty every 16 steps
+
+# Logging
+logging:
+  wandb: true
+  wandb_project: "ainimotion-v5"
+  log_every_n_steps: 50
+  sample_every_n_epochs: 5
