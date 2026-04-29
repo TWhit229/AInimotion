@@ -117,7 +117,7 @@ Thumbs.db
 *.engine
 *.plan
 # Exception: finished production model
-!model/best.pt
+!model/ainimotion.pt
 
 # Video files (test inputs/outputs)
 *.mp4
