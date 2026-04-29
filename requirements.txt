@@ -1,10 +1,29 @@
-# AInimotion Linux/WSL Requirements
+# AInimotion V5 — Python Dependencies
+# Install: pip install -r requirements.txt
+#
+# NOTE: PyTorch must be installed with CUDA support.
+# See https://pytorch.org/get-started/locally/ for platform-specific instructions.
+# Example (CUDA 12.8):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+
+# Core framework
 torch>=2.2.0
-torchvision
-torchaudio
-pillow
-tqdm
-wandb
-pyyaml
-lpips
-triton
+torchvision>=0.17.0
+
+# Numerical / image processing
+numpy>=1.24.0
+pillow>=10.0.0
+
+# Perceptual loss
+lpips>=0.1.4
+
+# Training utilities
+tqdm>=4.65.0
+wandb>=0.15.0
+pyyaml>=6.0
+
+# Optional: Linux-only kernel fusion backend (used by torch.compile)
+# triton>=2.1.0
+
+# Optional: TensorBoard logging (alternative to W&B)
+# tensorboard>=2.14.0

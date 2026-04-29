@@ -97,13 +97,10 @@ class Trainer:
         self.model = torch.compile(self.model)
         
         # Build discriminator (used in Phase 3)
-        disc_cfg = config.get('discriminator', {})
-        self.discriminator = MultiScalePatchGAN(
-            base_channels=disc_cfg.get('base_channels', 64)
-        ).to(self.device)
+        self.discriminator, self.optimizer_d, self.scheduler_d = self._create_discriminator()
         disc_params = sum(p.numel() for p in self.discriminator.parameters())
         print(f"  Discriminator: {disc_params:,} parameters")
-        
+
         # Loss function
         loss_cfg = config.get('loss', {})
         self.loss_fn = V5LossFunction(
@@ -113,7 +110,7 @@ class Trainer:
             gan_weight_max=loss_cfg.get('gan_weight_max', 0.1),
             high_freq_weight=loss_cfg.get('high_freq_weight', 1.5),
         ).to(self.device)
-        
+
         # Optimizers
         train_cfg = config.get('training', {})
         self.optimizer_g = torch.optim.AdamW(
@@ -122,25 +119,14 @@ class Trainer:
             weight_decay=train_cfg.get('weight_decay', 1e-4),
             betas=tuple(train_cfg.get('betas', [0.9, 0.999])),
         )
-        self.optimizer_d = torch.optim.AdamW(
-            self.discriminator.parameters(),
-            lr=disc_cfg.get('lr', 1e-4),
-            weight_decay=1e-4,
-        )
-        
+
         # LR scheduler
         total_epochs = train_cfg.get('total_epochs', 800)
         warmup = train_cfg.get('warmup_epochs', 10)
         min_lr = train_cfg.get('min_lr', 1e-6)
-        
+
         self.scheduler_g = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer_g, T_max=total_epochs - warmup, eta_min=min_lr,
-        )
-        # Discriminator only trains during Phase 3 (epochs 500-800 = 300 epochs),
-        # so T_max must match that duration, not the full training run.
-        gan_phase_epochs = total_epochs - 500
-        self.scheduler_d = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer_d, T_max=gan_phase_epochs, eta_min=min_lr / 10,
         )
         
         # AMP — bfloat16 does NOT need GradScaler (same exponent range as fp32)
@@ -217,7 +203,49 @@ class Trainer:
     def gan_active(self) -> bool:
         """Whether GAN training is active."""
         return self.loss_fn.get_gan_weight(self.epoch) > 0
-    
+
+    def _create_discriminator(self):
+        """Create discriminator, optimizer, and scheduler from config."""
+        disc_cfg = self.config.get('discriminator', {})
+        min_lr = self.config.get('training', {}).get('min_lr', 1e-6)
+
+        discriminator = MultiScalePatchGAN(
+            base_channels=disc_cfg.get('base_channels', 64)
+        ).to(self.device)
+        optimizer = torch.optim.AdamW(
+            discriminator.parameters(),
+            lr=disc_cfg.get('lr', 1e-4),
+            weight_decay=disc_cfg.get('weight_decay', 1e-4),
+        )
+        # D only trains during Phase 3 (epochs 500-800 = 300 epochs)
+        gan_phase_epochs = self.total_epochs - 500
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=gan_phase_epochs, eta_min=min_lr / 10,
+        )
+        return discriminator, optimizer, scheduler
+
+    def _check_disc_nan(self) -> bool:
+        """Check if any discriminator parameter or buffer contains NaN/Inf.
+
+        Must check buffers too: spectral norm stores weight_u/weight_v as
+        buffers, and these diverge first when power iteration goes unstable.
+        """
+        for p in self.discriminator.parameters():
+            if torch.isnan(p).any() or torch.isinf(p).any():
+                return True
+        for b in self.discriminator.buffers():
+            if torch.isnan(b).any() or torch.isinf(b).any():
+                return True
+        return False
+
+    def _reinit_discriminator(self):
+        """Reinitialize discriminator from scratch after NaN corruption."""
+        self.discriminator, self.optimizer_d, self.scheduler_d = self._create_discriminator()
+        # Fast-forward scheduler to current epoch
+        for _ in range(max(0, self.epoch - 500)):
+            self.scheduler_d.step()
+        print(f"  [!!] Discriminator reinitialized, LR={self.optimizer_d.param_groups[0]['lr']:.6f}")
+
     def build_dataloader(self, epoch: int = 0) -> DataLoader:
         """Build training dataloader."""
         data_cfg = self.config.get('data', {})
@@ -469,16 +497,23 @@ class Trainer:
                     pred = output['output']
                     
                     # Compute GAN loss if active
+                    # D runs in fp32 to avoid spectral norm instability in bf16
                     gan_loss = None
                     if self.gan_active:
-                        # Detach real preds for generator loss (no grad to D)
-                        with torch.no_grad():
-                            real_preds_for_g = self.discriminator(gt)
-                        fake_preds = self.discriminator(pred)
-                        gan_result = self.discriminator.compute_loss(
-                            real_preds_for_g, fake_preds, for_generator=True
-                        )
-                        gan_loss = gan_result['loss']
+                        with autocast('cuda', enabled=False):
+                            with torch.no_grad():
+                                real_preds_for_g = self.discriminator(gt.float())
+                            fake_preds = self.discriminator(pred.float())
+                            gan_result = self.discriminator.compute_loss(
+                                real_preds_for_g, fake_preds, for_generator=True
+                            )
+                            gan_loss = gan_result['loss']
+                        # If D is corrupted, skip GAN loss but keep training on reconstruction
+                        if torch.isnan(gan_loss) or torch.isinf(gan_loss):
+                            gan_loss = None
+                            if self._check_disc_nan():
+                                print(f"  [!!] Discriminator corrupted (NaN in weights/buffers), reinitializing")
+                                self._reinit_discriminator()
                     
                     # Full loss (includes routing auxiliary losses)
                     losses = self.loss_fn(
@@ -531,15 +566,13 @@ class Trainer:
                 self.optimizer_d.zero_grad()
 
                 try:
-                    # Fresh forward pass for discriminator (not reusing generator's)
-                    with autocast('cuda', dtype=self.amp_dtype, enabled=self.use_amp):
-                        real_preds_for_d = self.discriminator(gt)
-                        fake_preds_detached = self.discriminator(pred.detach())
-                        d_result = self.discriminator.compute_loss(
-                            real_preds_for_d, fake_preds_detached, for_generator=False
-                        )
-                        # D steps every batch (no accumulation), so no division needed
-                        d_loss = d_result['loss']
+                    # D runs entirely in fp32 — spectral norm is unstable in bf16
+                    real_preds_for_d = self.discriminator(gt.float())
+                    fake_preds_detached = self.discriminator(pred.detach().float())
+                    d_result = self.discriminator.compute_loss(
+                        real_preds_for_d, fake_preds_detached, for_generator=False
+                    )
+                    d_loss = d_result['loss']
 
                     # NaN guard — skip D step only, G metrics still collected below
                     if not (torch.isnan(d_loss) or torch.isinf(d_loss)):
@@ -558,6 +591,11 @@ class Trainer:
                         nn.utils.clip_grad_norm_(self.discriminator.parameters(), self.grad_clip)
                         self.optimizer_d.step()
                         d_loss_val = d_result['loss'].item()
+
+                        # Check for NaN in D weights after optimizer step
+                        if self._check_disc_nan():
+                            print(f"  [!!] Discriminator weights NaN after step at batch {batch_idx}")
+                            self._reinit_discriminator()
                     else:
                         print(f"  [!] NaN/Inf D loss at batch {batch_idx}, skipping D step")
                         self.optimizer_d.zero_grad()

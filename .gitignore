@@ -88,6 +88,7 @@ cython_debug/
 # IDEs and editors
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 *~
@@ -115,12 +116,8 @@ Thumbs.db
 *.onnx
 *.engine
 *.plan
-ainimotion/models/interp/*.pt
-ainimotion/models/interp/*.pth
-ainimotion/models/interp/*.onnx
-ainimotion/models/upscale/*.pt
-ainimotion/models/upscale/*.pth
-ainimotion/models/upscale/*.onnx
+# Exception: finished production model
+!model/best.pt
 
 # Video files (test inputs/outputs)
 *.mp4
@@ -187,12 +184,8 @@ check_sweep.py
 *.synctex.gz
 
 training_data/
-
-
 Training/
 Training_val/
-check_*.py
-find_*.py
-smoke_test_*.py
-verify_*.py
-expand_wsl.txt
+
+# Claude Code
+.claude/

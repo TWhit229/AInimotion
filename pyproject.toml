@@ -4,32 +4,64 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ainimotion"
-version = "0.1.0"
-description = "Anime Video Enhancement Pipeline"
+version = "5.0.0"
+description = "Deep learning system for anime video frame interpolation — multi-frame, layered architecture for sharp 24→48 FPS upconversion"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
 authors = [
-    {name = "Your Name", email = "your.email@example.com"}
+    {name = "Travis Whitaker"}
+]
+keywords = [
+    "anime",
+    "video-interpolation",
+    "frame-interpolation",
+    "deep-learning",
+    "optical-flow",
+    "pytorch",
+    "computer-vision",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Multimedia :: Video",
 ]
 dependencies = [
-    "torch",
-    "torchvision",
-    "pillow",
-    "scikit-image",
-    "numpy",
-    "tqdm",
-    "pyyaml",
-    "tensorboard",
-    "wandb"
+    "torch>=2.2.0",
+    "torchvision>=0.17.0",
+    "numpy>=1.24.0",
+    "pillow>=10.0.0",
+    "lpips>=0.1.4",
+    "tqdm>=4.65.0",
+    "pyyaml>=6.0",
+    "wandb>=0.15.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.1.0",
+]
+tensorboard = [
+    "tensorboard>=2.14.0",
 ]
 
 [project.urls]
 Homepage = "https://github.com/TWhit229/AInimotion"
-
-# [project.scripts]
-# CLI entry point removed — V5 uses scripts/train_v5.py directly
+Repository = "https://github.com/TWhit229/AInimotion"
+Issues = "https://github.com/TWhit229/AInimotion/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["ainimotion*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"

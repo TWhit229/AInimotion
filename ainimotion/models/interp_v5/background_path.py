@@ -57,12 +57,18 @@ class BackgroundPath(nn.Module):
         params = self.affine_head(feat_diff)
         return params.view(-1, 2, 3)
     
+    @torch.compiler.disable
     def _warp_affine(
         self,
         img: torch.Tensor,
         theta: torch.Tensor,
     ) -> torch.Tensor:
-        """Apply affine warp to image."""
+        """Apply affine warp to image.
+
+        torch.compiler.disable: F.affine_grid's backward (AffineGridGeneratorBackward0)
+        does not accept SymInt sizes from dynamic-shape recompilation, so we run this
+        small op in eager mode to avoid the recompile crash on batch-size changes.
+        """
         grid = F.affine_grid(theta, img.shape, align_corners=False)
         return F.grid_sample(img, grid, mode='bilinear', align_corners=False)
     
