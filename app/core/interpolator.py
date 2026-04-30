@@ -68,6 +68,22 @@ class Interpolator:
 
         state = {k.replace('_orig_mod.', ''): v for k, v in state.items()}
 
+        # Remap affine_head keys if checkpoint predates ONNX-compatible BackgroundPath
+        # Old: AdaptiveAvgPool2d(0), Flatten(1), Linear(2)... -> New: Flatten(0), Linear(1)...
+        remapped = {}
+        for k, v in state.items():
+            if 'background_path.affine_head.' in k:
+                parts = k.split('.')
+                idx_pos = parts.index('affine_head') + 1
+                old_idx = int(parts[idx_pos])
+                if old_idx >= 2:  # skip pool layer (idx 0), shift rest down by 1
+                    parts[idx_pos] = str(old_idx - 1)
+                    remapped['.'.join(parts)] = v
+                # idx 0 and 1 are AdaptiveAvgPool2d and Flatten (no params) — skip
+            else:
+                remapped[k] = v
+        state = remapped
+
         model.load_state_dict(state, strict=True)
         model = model.to(self.device).eval()
 
