@@ -1,11 +1,13 @@
 """
 V5 model inference for frame interpolation.
 
-Uses fp16 autocast + torch.compile for maximum throughput.
+Tries TensorRT (6x faster) first, falls back to PyTorch fp16.
 """
 
 from __future__ import annotations
 
+import os
+import sys
 import threading
 from pathlib import Path
 
@@ -15,15 +17,54 @@ import torch
 from ainimotion.models.interp_v5 import build_model
 
 
+class OnnxTrtInference:
+    """ONNX Runtime with TensorRT EP — ~6x faster than PyTorch."""
+
+    def __init__(self, onnx_path: str, cache_dir: str):
+        import onnxruntime as ort
+
+        # Add TensorRT + CUDA libs to PATH
+        sp = Path(sys.executable).parent / 'Lib' / 'site-packages'
+        for lib_dir in [sp / 'tensorrt_libs', sp / 'torch' / 'lib']:
+            if lib_dir.exists():
+                os.environ['PATH'] = str(lib_dir) + os.pathsep + os.environ.get('PATH', '')
+
+        os.makedirs(cache_dir, exist_ok=True)
+
+        trt_opts = {
+            'trt_fp16_enable': True,
+            'trt_engine_cache_enable': True,
+            'trt_engine_cache_path': cache_dir,
+        }
+
+        sess_opts = ort.SessionOptions()
+        sess_opts.log_severity_level = 3  # suppress warnings
+
+        self.session = ort.InferenceSession(
+            onnx_path, sess_opts,
+            providers=[
+                ('TensorrtExecutionProvider', trt_opts),
+                'CUDAExecutionProvider',
+            ]
+        )
+        self.active_provider = self.session.get_providers()[0]
+
+    def run(self, frames: np.ndarray) -> np.ndarray:
+        """frames: (B, 7, 3, H, W) float32 → output: (B, 3, H, W) float32"""
+        return self.session.run(['output'], {'frames': frames})[0]
+
+
 class Interpolator:
     """
-    Loads the V5 model and runs batched interpolation with fp16 + torch.compile.
+    Loads the V5 model and runs inference.
+
+    Automatically uses TensorRT if available (6x faster), falls back to PyTorch fp16.
+    First TRT run builds the engine (~60-90s), subsequent runs use cached engine.
 
     Args:
         model_path: Path to checkpoint (.pt file).
         device: CUDA device (default: 'cuda').
-        use_ema: Use EMA weights for slightly better quality (default: True).
-        use_compile: Use torch.compile for faster inference (default: True).
+        use_ema: Use EMA weights (default: True).
     """
 
     def __init__(
@@ -34,19 +75,48 @@ class Interpolator:
         use_compile: bool = True,
     ):
         self.device = torch.device(device)
-        self.model = self._load_model(model_path, use_ema)
-        self._compiled = False
-        self._use_compile = use_compile
         self._batch_size: int | None = None
         self._batch_size_res: tuple[int, int] | None = None
+        self._batch_size_backend: str | None = None  # 'trt' or 'pytorch'
         self._infer_lock = threading.Lock()
+
+        # Try TensorRT first
+        self._trt: OnnxTrtInference | None = None
+        self._use_trt = False
+        model_dir = Path(model_path).parent
+
+        onnx_path = model_dir / 'ainimotion_720p.onnx'
+        if onnx_path.exists():
+            try:
+                print(f"Loading TensorRT backend from {onnx_path}...")
+                self._trt = OnnxTrtInference(
+                    str(onnx_path),
+                    str(model_dir / 'trt_cache'),
+                )
+                if 'TensorrtExecutionProvider' in self._trt.active_provider:
+                    self._use_trt = True
+                    print(f"  TensorRT active (engine cached for instant startup)")
+                else:
+                    print(f"  TensorRT not available, using {self._trt.active_provider}")
+                    self._trt = None
+            except Exception as e:
+                print(f"  TensorRT failed: {e}")
+                self._trt = None
+
+        # Always load PyTorch model (needed for multi-timestep encode/decode + fallback)
+        self.model = self._load_model(model_path, use_ema)
+
+        if self._use_trt:
+            print("  Mode: TensorRT fp16 (~6x faster)")
+        else:
+            print("  Mode: PyTorch fp16")
 
     def _load_model(self, path: str | Path, use_ema: bool) -> torch.nn.Module:
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"Model checkpoint not found: {path}")
 
-        print(f"Loading model from {path}...")
+        print(f"Loading PyTorch model from {path}...")
         checkpoint = torch.load(path, map_location='cpu', weights_only=False)
 
         config = checkpoint.get('config', {}).get('model', {})
@@ -68,18 +138,16 @@ class Interpolator:
 
         state = {k.replace('_orig_mod.', ''): v for k, v in state.items()}
 
-        # Remap affine_head keys if checkpoint predates ONNX-compatible BackgroundPath
-        # Old: AdaptiveAvgPool2d(0), Flatten(1), Linear(2)... -> New: Flatten(0), Linear(1)...
+        # Remap affine_head keys (ONNX-compatible BackgroundPath has different Sequential indices)
         remapped = {}
         for k, v in state.items():
             if 'background_path.affine_head.' in k:
                 parts = k.split('.')
                 idx_pos = parts.index('affine_head') + 1
                 old_idx = int(parts[idx_pos])
-                if old_idx >= 2:  # skip pool layer (idx 0), shift rest down by 1
+                if old_idx >= 2:
                     parts[idx_pos] = str(old_idx - 1)
                     remapped['.'.join(parts)] = v
-                # idx 0 and 1 are AdaptiveAvgPool2d and Flatten (no params) — skip
             else:
                 remapped[k] = v
         state = remapped
@@ -87,7 +155,6 @@ class Interpolator:
         model.load_state_dict(state, strict=True)
         model = model.to(self.device).eval()
 
-        # Enable TF32 for faster matmuls on Ampere+ GPUs
         torch.backends.cudnn.benchmark = True
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
@@ -96,51 +163,48 @@ class Interpolator:
         print(f"  Model loaded: {params:,} parameters on {self.device}")
         return model
 
-    def _compile_model(self):
-        """Compile model after batch size is determined (one-time cost)."""
-        if self._compiled or not self._use_compile:
-            return
-
-        # torch.compile requires Triton (Linux only as of 2026)
-        import sys
-        if sys.platform == 'win32':
-            print("  torch.compile skipped (Windows, no Triton)")
-            return
-
-        try:
-            print("  Compiling model (one-time, ~30s)...")
-            self.model = torch.compile(self.model, mode='reduce-overhead')
-            self._compiled = True
-            print("  Compiled successfully")
-        except Exception as e:
-            print(f"  Compile skipped ({e}), using eager mode")
-
     def find_batch_size(self, height: int, width: int) -> int:
-        """Auto-detect largest batch size that fits in VRAM with fp16."""
+        """Auto-detect largest batch size that fits in VRAM."""
         if self._batch_size is not None and self._batch_size_res == (height, width):
             return self._batch_size
         self._batch_size = None
 
-        with self._infer_lock:
+        if self._use_trt:
+            # TRT: test with actual session (only works at exported resolution)
             for bs in [4, 2, 1]:
-                torch.cuda.empty_cache()
-                dummy = None
                 try:
-                    dummy = torch.randn(bs, 7, 3, height, width, device=self.device)
-                    with torch.inference_mode():
-                        with torch.amp.autocast('cuda', dtype=torch.float16):
-                            self.model(dummy)
-                    del dummy
-                    torch.cuda.empty_cache()
+                    dummy = np.random.randn(bs, 7, 3, height, width).astype(np.float32)
+                    self._trt.run(dummy)
                     self._batch_size = bs
                     self._batch_size_res = (height, width)
-                    print(f"  Batch size: {bs} (at {width}x{height}, fp16)")
-                    self._compile_model()
+                    self._batch_size_backend = 'trt'
+                    print(f"  Batch size: {bs} (at {width}x{height}, TensorRT)")
                     return bs
-                except torch.cuda.OutOfMemoryError:
-                    del dummy
-                    torch.cuda.empty_cache()
+                except Exception:
                     continue
+            # TRT failed at this resolution — fall through to PyTorch
+            print(f"  TRT failed at {width}x{height}, falling back to PyTorch")
+            # PyTorch: test with model
+            with self._infer_lock:
+                for bs in [4, 2, 1]:
+                    torch.cuda.empty_cache()
+                    dummy = None
+                    try:
+                        dummy = torch.randn(bs, 7, 3, height, width, device=self.device)
+                        with torch.inference_mode():
+                            with torch.amp.autocast('cuda', dtype=torch.float16):
+                                self.model(dummy)
+                        del dummy
+                        torch.cuda.empty_cache()
+                        self._batch_size = bs
+                        self._batch_size_res = (height, width)
+                        self._batch_size_backend = 'pytorch'
+                        print(f"  Batch size: {bs} (at {width}x{height}, PyTorch fp16)")
+                        return bs
+                    except torch.cuda.OutOfMemoryError:
+                        del dummy
+                        torch.cuda.empty_cache()
+                        continue
 
         raise RuntimeError(
             f"Cannot fit even batch_size=1 at {width}x{height} in VRAM. "
@@ -152,14 +216,30 @@ class Interpolator:
         windows: list[list[np.ndarray]],
         timestep: float = 0.5,
     ) -> list[np.ndarray]:
-        """
-        Interpolate a batch of 7-frame windows at a given timestep.
-        Uses fp16 autocast for ~2x speed vs fp32.
-        """
+        """Interpolate a batch of 7-frame windows at a given timestep."""
         B = len(windows)
-        assert B > 0, "Empty batch"
-        assert all(len(w) == 7 for w in windows), "Each window must have 7 frames"
+        assert B > 0
+        assert all(len(w) == 7 for w in windows)
 
+        if self._use_trt and timestep == 0.5 and self._batch_size_backend == 'trt':
+            # TensorRT path (fixed timestep=0.5, only when TRT batch size detection succeeded)
+            H, W = windows[0][0].shape[:2]
+            if (H, W) == self._batch_size_res:
+                batch = np.stack([
+                    np.stack([frame.astype(np.float32) / 255.0 for frame in window])
+                    for window in windows
+                ])
+                batch = batch.transpose(0, 1, 4, 2, 3)  # (B, 7, 3, H, W)
+
+                with self._infer_lock:
+                    output = self._trt.run(batch)
+
+                output = np.clip(output, 0, 1)
+                output = (output * 255).astype(np.uint8)
+                output = output.transpose(0, 2, 3, 1)
+                return [output[i] for i in range(B)]
+
+        # PyTorch path (any timestep, or TRT not available)
         batch = torch.stack([
             torch.stack([
                 torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
@@ -173,7 +253,7 @@ class Interpolator:
                 with torch.amp.autocast('cuda', dtype=torch.float16):
                     result = self.model(batch, timestep=timestep)
 
-                output = result['output'].float()  # back to fp32 for clamp/convert
+                output = result['output'].float()
                 output = output.clamp(0, 1).mul(255).byte()
                 output = output.permute(0, 2, 3, 1).cpu().numpy()
 
@@ -188,15 +268,16 @@ class Interpolator:
         timesteps: list[float],
     ) -> list[list[np.ndarray]]:
         """
-        Interpolate a batch of windows at multiple timesteps efficiently.
-        Encodes once (~65% of compute), then decodes per timestep (~35%).
-
-        Returns: list of B lists, each containing len(timesteps) frames.
+        Interpolate at multiple timesteps efficiently.
+        Uses TRT for t=0.5, PyTorch encode/decode for others.
         """
         B = len(windows)
-        assert B > 0
-        assert all(len(w) == 7 for w in windows)
 
+        if len(timesteps) == 1 and timesteps[0] == 0.5 and self._use_trt:
+            results = self.interpolate_batch(windows, 0.5)
+            return [[r] for r in results]
+
+        # PyTorch path: encode once, decode per timestep
         batch = torch.stack([
             torch.stack([
                 torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
@@ -208,10 +289,8 @@ class Interpolator:
         with self._infer_lock:
             with torch.inference_mode():
                 with torch.amp.autocast('cuda', dtype=torch.float16):
-                    # Encode once (expensive)
                     shared = self.model.encode(batch)
 
-                    # Decode per timestep (cheap)
                     all_results = []
                     for t in timesteps:
                         result = self.model.decode_timestep(shared, timestep=t)
@@ -219,46 +298,16 @@ class Interpolator:
                         out = out.permute(0, 2, 3, 1).cpu().numpy()
                         all_results.append([out[i] for i in range(B)])
 
-        # Reshape: all_results[timestep][batch] -> per_window[batch][timestep]
         return [[all_results[t][i] for t in range(len(timesteps))] for i in range(B)]
 
     @property
     def batch_size(self) -> int | None:
         return self._batch_size
 
+    @property
+    def backend(self) -> str:
+        return "TensorRT" if self._use_trt else "PyTorch"
+
     def unload(self):
         self.model = self.model.cpu()
         torch.cuda.empty_cache()
-
-
-if __name__ == '__main__':
-    import sys
-    import time
-
-    model_path = sys.argv[1] if len(sys.argv) > 1 else 'model/ainimotion.pt'
-    interp = Interpolator(model_path)
-
-    H, W = 720, 1280
-    bs = interp.find_batch_size(H, W)
-
-    print(f"\nBenchmarking BS={bs} at {W}x{H} (fp16 + compile)...")
-    dummy_window = [np.random.randint(0, 255, (H, W, 3), dtype=np.uint8) for _ in range(7)]
-    batch = [dummy_window] * bs
-
-    # Warmup (includes compile)
-    _ = interp.interpolate_batch(batch)
-    _ = interp.interpolate_batch(batch)
-
-    n_iters = 10
-    t0 = time.time()
-    for _ in range(n_iters):
-        results = interp.interpolate_batch(batch)
-    elapsed = time.time() - t0
-
-    total_frames = n_iters * bs
-    fps = total_frames / elapsed
-    print(f"  {total_frames} frames in {elapsed:.2f}s = {fps:.2f} frames/sec")
-    print(f"  Output: {results[0].shape}, range [{results[0].min()}, {results[0].max()}]")
-
-    peak = torch.cuda.max_memory_allocated() / 1024**3
-    print(f"  VRAM peak: {peak:.2f} GB")

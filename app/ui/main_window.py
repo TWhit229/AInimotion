@@ -286,6 +286,36 @@ class MainWindow(QMainWindow):
 
         settings_menu.addSeparator()
 
+        # Action-only mode
+        self._action_only_action = QAction("&Action-Only Mode", self, checkable=True)
+        saved_action = self._settings.value("action_only", False, type=bool)
+        self._action_only_action.setChecked(saved_action)
+        self._action_only_action.setToolTip(
+            "Only interpolate action/fight scenes. Calm scenes get frame duplication (much faster)."
+        )
+        self._action_only_action.triggered.connect(self._on_toggle_action_only)
+        settings_menu.addAction(self._action_only_action)
+        self.processor.action_only = saved_action
+
+        # Action sensitivity (link window)
+        action_sens_menu = settings_menu.addMenu("Action &Sensitivity")
+        self._action_sens_actions = {}
+        for label, value in [
+            ("Tight (5s) — only very close fights", 5.0),
+            ("Normal (15s) — bridges short dialogue", 15.0),
+            ("Wide (30s) — links extended sequences", 30.0),
+            ("Very Wide (60s) — whole arc as one block", 60.0),
+        ]:
+            action = QAction(label, self, checkable=True)
+            action.triggered.connect(lambda _, v=value: self._on_set_action_sens(v))
+            action_sens_menu.addAction(action)
+            self._action_sens_actions[value] = action
+        saved_sens = self._settings.value("action_link_seconds", 15.0, type=float)
+        self._action_sens_actions.get(saved_sens, self._action_sens_actions[15.0]).setChecked(True)
+        self.processor.action_link_seconds = saved_sens
+
+        settings_menu.addSeparator()
+
         upscale_menu = settings_menu.addMenu("&Upscaling")
         for label in ["None", "2x (coming soon)", "4x (coming soon)"]:
             action = QAction(label, self, checkable=True)
@@ -647,6 +677,16 @@ class MainWindow(QMainWindow):
     def _on_set_format(self, value):
         for v, a in self._fmt_actions.items(): a.setChecked(v == value)
         self._settings.setValue("output_format", value)
+
+    def _on_toggle_action_only(self, checked):
+        self._settings.setValue("action_only", checked)
+        self.processor.action_only = checked
+        self._log(f"Action-only mode: {'ON' if checked else 'OFF'}")
+
+    def _on_set_action_sens(self, value):
+        for v, a in self._action_sens_actions.items(): a.setChecked(v == value)
+        self._settings.setValue("action_link_seconds", value)
+        self.processor.action_link_seconds = value
 
     def _on_set_player(self):
         path, _ = QFileDialog.getOpenFileName(

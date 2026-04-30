@@ -19,6 +19,7 @@ from .frame_analysis import (
     AnalysisResult,
     PairType,
     analyze_video,
+    apply_action_only_mode,
     build_context_indices,
 )
 from .interpolator import Interpolator
@@ -72,6 +73,8 @@ class VideoProcessor:
         self.codec = codec
         self.crf = crf
         self.fps_multiplier = fps_multiplier
+        self.action_only = False
+        self.action_link_seconds = 15.0  # sensitivity slider value
 
         self._cancel = threading.Event()
         self._pause = threading.Event()
@@ -140,6 +143,19 @@ class VideoProcessor:
                 cancel_event=cancel,
                 pause_event=pause,
             )
+        # Apply action-only mode: reclassify non-action as CALM (frame dup)
+        if self.action_only:
+            info = probe_video(input_path)
+            regions = apply_action_only_mode(
+                analysis, info.fps,
+                link_seconds=self.action_link_seconds,
+            )
+            if regions:
+                total_sec = sum((e - s) / info.fps for s, e in regions)
+                print(f"  Action-only: {len(regions)} region(s), {total_sec:.0f}s of action")
+            else:
+                print(f"  Action-only: no action detected, all frames duplicated")
+
         print(f"\n{analysis.summary()}")
 
         if cancel.is_set():
