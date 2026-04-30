@@ -214,7 +214,9 @@ class LayeredInterpolatorV5(nn.Module):
         # Use unconditional soft gating to avoid data-dependent control flow
         # that would break torch.compile and block gradient flow
         scene_mask = confidence.view(B, 1, 1, 1)
-        output = (1 - scene_mask) * output + scene_mask * frame_i
+        # Blend toward the nearest anchor based on timestep
+        fallback = (1 - timestep) * frame_i + timestep * frame_ip1
+        output = (1 - scene_mask) * output + scene_mask * fallback
         
         return {
             'output': output,
@@ -230,6 +232,77 @@ class LayeredInterpolatorV5(nn.Module):
             'flow_fwd': warp_output['flow_fwd'],
             'flow_bwd': warp_output['flow_bwd'],
         }
+
+    def encode(self, frames: list[torch.Tensor] | torch.Tensor) -> dict:
+        """
+        Encode shared features (timestep-independent). ~65% of compute.
+        Call once per frame pair, then decode_timestep() for each timestep.
+        """
+        if isinstance(frames, torch.Tensor):
+            if frames.dim() == 5:
+                frames = [frames[:, i] for i in range(frames.shape[1])]
+            elif frames.dim() == 4:
+                frames = [frames[:, i*3:(i+1)*3] for i in range(7)]
+
+        B, _, H, W = frames[0].shape
+        frame_i = frames[3]
+        frame_ip1 = frames[4]
+
+        all_feats = [self.encoder(f) for f in frames]
+        feats_quarter = [feats[2] for feats in all_feats]
+        fused_feats = self.temporal_fusion(feats_quarter)
+        feat_i = fused_feats[3]
+        feat_ip1 = fused_feats[4]
+
+        corr = compute_correlation(feat_i, feat_ip1)
+        is_scene_cut, confidence = self.scene_gate(corr, return_confidence=True)
+        edge_i = compute_sobel_edges(frame_i)
+        edge_ip1 = compute_sobel_edges(frame_ip1)
+        edge_map = (edge_i + edge_ip1) / 2
+
+        routing_map = self.motion_router(corr, feat_i, feat_ip1, target_size=(H, W))
+        anchor_feat = (feat_i + feat_ip1) / 2
+        fg_synth = self.synthesis_branch(anchor_feat, fused_feats, edge_i, edge_ip1)
+
+        return {
+            'frame_i': frame_i, 'frame_ip1': frame_ip1,
+            'feat_i': feat_i, 'feat_ip1': feat_ip1,
+            'fused_feats': fused_feats,
+            'confidence': confidence, 'is_scene_cut': is_scene_cut,
+            'edge_i': edge_i, 'edge_ip1': edge_ip1, 'edge_map': edge_map,
+            'routing_map': routing_map, 'fg_synth': fg_synth,
+        }
+
+    def decode_timestep(self, shared: dict, timestep: float = 0.5) -> dict:
+        """
+        Decode at a specific timestep using pre-computed shared features.
+        Only runs the lightweight timestep-dependent parts (~35% of compute).
+        """
+        frame_i = shared['frame_i']
+        frame_ip1 = shared['frame_ip1']
+        feat_i = shared['feat_i']
+        feat_ip1 = shared['feat_ip1']
+        B = frame_i.shape[0]
+
+        bg_output = self.background_path(
+            frame_i, frame_ip1, feat_i, feat_ip1, timestep=timestep
+        )
+        warp_output = self.warp_branch(
+            frame_i, frame_ip1, feat1=feat_i, feat2=feat_ip1, timestep=timestep
+        )
+        fg_warp = warp_output['output']
+
+        foreground = (1 - shared['routing_map']) * fg_warp + shared['routing_map'] * shared['fg_synth']
+        comp_output = self.compositor(
+            foreground, bg_output['background'], frame_i, frame_ip1, shared['edge_map']
+        )
+        output = self.refinement(comp_output['composite'], shared['edge_i'], shared['edge_ip1'])
+
+        scene_mask = shared['confidence'].view(B, 1, 1, 1)
+        fallback = (1 - timestep) * frame_i + timestep * frame_ip1
+        output = (1 - scene_mask) * output + scene_mask * fallback
+
+        return {'output': output}
 
 
 def build_model(

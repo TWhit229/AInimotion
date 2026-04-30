@@ -109,7 +109,7 @@ class DeformableCrossTemporalAttention(nn.Module):
         attn_logits = attn_logits.view(B, nH, T * K, H, W)
         attn_weights = attn_logits.softmax(dim=2)  # (B, nH, T*K, H, W)
         
-        # Base grid for sampling
+        # Base grid for sampling (fp32 for precision, cast to input dtype for grid_sample)
         grid_y, grid_x = torch.meshgrid(
             torch.arange(H, device=query_feat.device, dtype=torch.float32),
             torch.arange(W, device=query_feat.device, dtype=torch.float32),
@@ -283,11 +283,11 @@ def compute_sobel_edges(img: torch.Tensor) -> torch.Tensor:
     gx = F.conv2d(gray, sobel_x, padding=1)
     gy = F.conv2d(gray, sobel_y, padding=1)
     
-    magnitude = torch.sqrt(gx ** 2 + gy ** 2 + 1e-6)
-    # Normalize to [0, 1] per sample
+    magnitude = torch.sqrt(gx ** 2 + gy ** 2 + 1e-3)
+    # Normalize to [0, 1] per sample (eps=1e-3 safe for fp16, min normal ~6e-5)
     B = magnitude.shape[0]
     max_vals = magnitude.view(B, -1).max(dim=1).values.view(B, 1, 1, 1)
-    magnitude = magnitude / (max_vals + 1e-6)
+    magnitude = magnitude / (max_vals + 1e-3)
     
     return magnitude
 

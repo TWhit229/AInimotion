@@ -216,8 +216,8 @@ def compute_correlation(feat1: torch.Tensor, feat2: torch.Tensor) -> torch.Tenso
     Returns:
         (B, 1, H, W) correlation map (cosine similarity per pixel)
     """
-    f1 = F.normalize(feat1, dim=1)
-    f2 = F.normalize(feat2, dim=1)
+    f1 = F.normalize(feat1, dim=1, eps=1e-4)  # fp16-safe eps
+    f2 = F.normalize(feat2, dim=1, eps=1e-4)
     corr = (f1 * f2).sum(dim=1, keepdim=True)
     return corr
 

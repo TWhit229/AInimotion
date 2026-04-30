@@ -187,5 +187,10 @@ training_data/
 Training/
 Training_val/
 
+# PyInstaller build
+build/
+dist/
+*.spec
+
 # Claude Code
 .claude/
