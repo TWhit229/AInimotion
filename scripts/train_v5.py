@@ -413,15 +413,44 @@ class Trainer:
         # The checkpoint has clean keys (prefix stripped during save), so loading directly
         # into the compiled model with strict=False silently drops ALL weights.
         gen_sd = strip_compiled_prefix(ckpt['generator_state_dict'])
+
+        # Remap affine_head keys if checkpoint predates ONNX-compatible BackgroundPath
+        # Old: AdaptiveAvgPool2d(0), Flatten(1), Linear(2)... → New: Flatten(0), Linear(1)...
+        remapped = {}
+        for k, v in gen_sd.items():
+            if 'background_path.affine_head.' in k:
+                parts = k.split('.')
+                idx_pos = parts.index('affine_head') + 1
+                old_idx = int(parts[idx_pos])
+                if old_idx >= 2:
+                    parts[idx_pos] = str(old_idx - 1)
+                    remapped['.'.join(parts)] = v
+            else:
+                remapped[k] = v
+        if len(remapped) != len(gen_sd):
+            print(f"  [!] Remapped {len(gen_sd)} affine_head keys for ONNX-compatible model")
+        gen_sd = remapped
+
         if hasattr(self.model, '_orig_mod'):
-            # Compiled model — load into the underlying module
             result = self.model._orig_mod.load_state_dict(gen_sd, strict=True)
         else:
             result = self.model.load_state_dict(gen_sd, strict=True)
 
         if 'ema_state_dict' in ckpt:
             ema_sd = strip_compiled_prefix(ckpt['ema_state_dict'])
-            self.ema_model.load_state_dict(ema_sd, strict=True)
+            # Remap EMA affine_head keys (same shift, but keys have 'module.' prefix)
+            ema_remapped = {}
+            for k, v in ema_sd.items():
+                if 'background_path.affine_head.' in k:
+                    parts = k.split('.')
+                    idx_pos = parts.index('affine_head') + 1
+                    old_idx = int(parts[idx_pos])
+                    if old_idx >= 2:
+                        parts[idx_pos] = str(old_idx - 1)
+                        ema_remapped['.'.join(parts)] = v
+                else:
+                    ema_remapped[k] = v
+            self.ema_model.load_state_dict(ema_remapped, strict=True)
 
         disc_sd = strip_compiled_prefix(ckpt['discriminator_state_dict'])
         if hasattr(self.discriminator, '_orig_mod'):
