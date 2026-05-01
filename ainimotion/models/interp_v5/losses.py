@@ -173,6 +173,61 @@ class CensusLoss(nn.Module):
         return torch.sqrt((d_pred - d_gt) ** 2 + 1e-6).mean()
 
 
+class WarpingLoss(nn.Module):
+    """
+    Direct flow supervision: warp anchor frames using predicted flow, compare to GT.
+
+    This provides stronger gradient signal to the flow estimator than backpropagating
+    through the full pipeline (RIFE paper insight). The warp branch predicts
+    flow_fwd (frame_i → target) and flow_bwd (frame_ip1 → target). We warp
+    both anchors and compare to the ground truth intermediate frame.
+    """
+
+    def forward(
+        self,
+        frame_i: torch.Tensor,
+        frame_ip1: torch.Tensor,
+        flow_fwd: torch.Tensor,
+        flow_bwd: torch.Tensor,
+        gt: torch.Tensor,
+        timestep: float = 0.5,
+    ) -> torch.Tensor:
+        B, _, H, W = frame_i.shape
+
+        # Scale flows by timestep
+        flow_t_fwd = flow_fwd * timestep
+        flow_t_bwd = flow_bwd * (1 - timestep)
+
+        # Build sampling grids
+        grid_fwd = self._flow_to_grid(flow_t_fwd)
+        grid_bwd = self._flow_to_grid(flow_t_bwd)
+
+        # Warp anchors toward the target time
+        warped_i = F.grid_sample(frame_i, grid_fwd, mode='bilinear', align_corners=True)
+        warped_ip1 = F.grid_sample(frame_ip1, grid_bwd, mode='bilinear', align_corners=True)
+
+        # Charbonnier on warped frames vs GT
+        eps = 1e-6
+        loss_fwd = torch.sqrt((warped_i - gt) ** 2 + eps).mean()
+        loss_bwd = torch.sqrt((warped_ip1 - gt) ** 2 + eps).mean()
+
+        return (loss_fwd + loss_bwd) / 2
+
+    @staticmethod
+    def _flow_to_grid(flow: torch.Tensor) -> torch.Tensor:
+        B, _, H, W = flow.shape
+        grid_y, grid_x = torch.meshgrid(
+            torch.linspace(-1, 1, H, device=flow.device),
+            torch.linspace(-1, 1, W, device=flow.device),
+            indexing='ij',
+        )
+        grid = torch.stack([grid_x, grid_y], dim=0).unsqueeze(0).expand(B, -1, -1, -1)
+        flow_norm = flow.clone()
+        flow_norm[:, 0] = flow[:, 0] / (W / 2)
+        flow_norm[:, 1] = flow[:, 1] / (H / 2)
+        return (grid + flow_norm).permute(0, 2, 3, 1)
+
+
 class V5LossFunction(nn.Module):
     """
     Combined V5 loss with progressive scheduling.
@@ -203,6 +258,8 @@ class V5LossFunction(nn.Module):
         # Temporal consistency (V5.1)
         temporal_weight_max: float = 0.0,
         temporal_ramp_epochs: int = 50,
+        # Warping loss (V5.1) — direct flow supervision
+        warp_loss_weight: float = 0.0,
     ):
         super().__init__()
         self.charb_weight = charb_weight
@@ -217,12 +274,14 @@ class V5LossFunction(nn.Module):
         self.branch_aux_weight = branch_aux_weight
         self.temporal_weight_max = temporal_weight_max
         self.temporal_ramp_epochs = temporal_ramp_epochs
+        self.warp_loss_weight = warp_loss_weight
 
         self.charbonnier = CharbonnierLoss()
         self.edge_l1 = EdgeWeightedL1Loss()
         self.fft_loss = FFTAmplitudeLoss(high_freq_weight=high_freq_weight)
         self.lpips = LPIPSLoss()
         self.census = CensusLoss()
+        self.warping_loss = WarpingLoss()
 
     def get_temporal_weight(self, epoch: int) -> float:
         """Progressive temporal consistency weight ramp-up."""
@@ -330,6 +389,11 @@ class V5LossFunction(nn.Module):
         routing_map: torch.Tensor | None = None,
         fg_warp: torch.Tensor | None = None,
         fg_synth: torch.Tensor | None = None,
+        # V5.1: warping loss inputs
+        frame_i: torch.Tensor | None = None,
+        frame_ip1: torch.Tensor | None = None,
+        flow_fwd: torch.Tensor | None = None,
+        flow_bwd: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Compute all losses for current epoch.
@@ -380,7 +444,13 @@ class V5LossFunction(nn.Module):
         if routing_map is not None and fg_warp is not None and fg_synth is not None:
             routing_losses = self.compute_routing_losses(routing_map, fg_warp, fg_synth, gt)
             total = total + routing_losses['routing_total']
-            
+
+        # Warping loss: direct flow supervision (V5.1)
+        l_warp = torch.tensor(0.0, device=pred.device)
+        if self.warp_loss_weight > 0 and flow_fwd is not None and frame_i is not None:
+            l_warp = self.warping_loss(frame_i, frame_ip1, flow_fwd, flow_bwd, gt)
+            total = total + self.warp_loss_weight * l_warp
+
         result = {
             'total': total,
             'charbonnier': l_charb,
@@ -392,6 +462,7 @@ class V5LossFunction(nn.Module):
             'fft_weight': fft_w,
             'gan_weight': gan_w,
             'lpips_weight': lpips_w,
+            'warp_loss': l_warp,
         }
         result.update(routing_losses)
         return result

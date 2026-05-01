@@ -111,6 +111,7 @@ class Trainer:
             high_freq_weight=loss_cfg.get('high_freq_weight', 1.5),
             temporal_weight_max=loss_cfg.get('temporal_weight_max', 0.0),
             temporal_ramp_epochs=loss_cfg.get('temporal_ramp_epochs', 50),
+            warp_loss_weight=loss_cfg.get('warp_loss_weight', 0.0),
         ).to(self.device)
 
         # Optimizers
@@ -519,12 +520,15 @@ class Trainer:
                                 print(f"  [!!] Discriminator corrupted (NaN in weights/buffers), reinitializing")
                                 self._reinit_discriminator()
                     
-                    # Full loss (includes routing auxiliary losses)
+                    # Full loss (includes routing auxiliary + warping losses)
                     losses = self.loss_fn(
                         pred, gt, epoch=self.epoch, gan_loss=gan_loss,
                         routing_map=output.get('routing_map'),
                         fg_warp=output.get('fg_warp'),
                         fg_synth=output.get('fg_synth'),
+                        frame_i=frames[3], frame_ip1=frames[4],
+                        flow_fwd=output.get('flow_fwd'),
+                        flow_bwd=output.get('flow_bwd'),
                     )
                     total_loss = losses['total']
                     
