@@ -24,8 +24,13 @@ class OnnxTrtInference:
         import onnxruntime as ort
 
         # Add TensorRT + CUDA libs to PATH
-        sp = Path(sys.executable).parent / 'Lib' / 'site-packages'
-        for lib_dir in [sp / 'tensorrt_libs', sp / 'torch' / 'lib']:
+        # Check both: site-packages (dev) and exe directory (packaged)
+        exe_dir = Path(sys.executable).parent
+        sp = exe_dir / 'Lib' / 'site-packages'
+        for lib_dir in [
+            sp / 'tensorrt_libs', sp / 'torch' / 'lib',  # dev
+            exe_dir,  # packaged (DLLs next to exe)
+        ]:
             if lib_dir.exists():
                 os.environ['PATH'] = str(lib_dir) + os.pathsep + os.environ.get('PATH', '')
 
@@ -206,9 +211,17 @@ class Interpolator:
                         torch.cuda.empty_cache()
                         continue
 
+        # Debug info for the error
+        try:
+            free = torch.cuda.mem_get_info()[0] / 1024**3
+            total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            gpu_info = f"GPU: {free:.1f}/{total:.0f} GB free"
+        except Exception:
+            gpu_info = "GPU: unable to query"
+
         raise RuntimeError(
-            f"Cannot fit even batch_size=1 at {width}x{height} in VRAM. "
-            f"Reduce resolution in Settings or free GPU memory."
+            f"Cannot fit batch_size=1 at {width}x{height}. {gpu_info}. "
+            f"Close other GPU apps or reduce resolution in Settings."
         )
 
     def interpolate_batch(

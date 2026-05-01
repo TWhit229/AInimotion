@@ -200,6 +200,9 @@ class V5LossFunction(nn.Module):
         routing_balance_weight: float = 0.01,
         routing_entropy_weight: float = 0.1,
         branch_aux_weight: float = 0.5,
+        # Temporal consistency (V5.1)
+        temporal_weight_max: float = 0.0,
+        temporal_ramp_epochs: int = 50,
     ):
         super().__init__()
         self.charb_weight = charb_weight
@@ -212,12 +215,21 @@ class V5LossFunction(nn.Module):
         self.routing_balance_weight = routing_balance_weight
         self.routing_entropy_weight = routing_entropy_weight
         self.branch_aux_weight = branch_aux_weight
-        
+        self.temporal_weight_max = temporal_weight_max
+        self.temporal_ramp_epochs = temporal_ramp_epochs
+
         self.charbonnier = CharbonnierLoss()
         self.edge_l1 = EdgeWeightedL1Loss()
         self.fft_loss = FFTAmplitudeLoss(high_freq_weight=high_freq_weight)
         self.lpips = LPIPSLoss()
         self.census = CensusLoss()
+
+    def get_temporal_weight(self, epoch: int) -> float:
+        """Progressive temporal consistency weight ramp-up."""
+        if self.temporal_weight_max <= 0:
+            return 0.0
+        ramp = min(1.0, epoch / max(self.temporal_ramp_epochs, 1))
+        return self.temporal_weight_max * ramp
     
     def get_fft_weight(self, epoch: int) -> float:
         """Progressive FFT weight ramp-up."""
@@ -383,6 +395,45 @@ class V5LossFunction(nn.Module):
         }
         result.update(routing_losses)
         return result
+
+    def compute_temporal_consistency(
+        self,
+        pred_a: torch.Tensor,
+        pred_b: torch.Tensor,
+        gt_a: torch.Tensor,
+        gt_b: torch.Tensor,
+        epoch: int = 0,
+    ) -> torch.Tensor:
+        """
+        Temporal consistency loss between consecutive interpolated frames.
+
+        Penalizes the model when the difference between consecutive predictions
+        doesn't match the difference between consecutive ground truths.
+        This reduces flickering by encouraging smooth frame-to-frame transitions.
+
+        Args:
+            pred_a: Model output for pair A (B, 3, H, W)
+            pred_b: Model output for pair B (consecutive) (B, 3, H, W)
+            gt_a: Ground truth for pair A (B, 3, H, W)
+            gt_b: Ground truth for pair B (B, 3, H, W)
+            epoch: Current epoch (for weight scheduling)
+
+        Returns:
+            Weighted temporal consistency loss scalar.
+        """
+        tw = self.get_temporal_weight(epoch)
+        if tw <= 0:
+            return torch.tensor(0.0, device=pred_a.device)
+
+        # The predicted temporal difference should match the ground truth temporal difference
+        pred_diff = pred_b - pred_a
+        gt_diff = gt_b - gt_a
+
+        # Charbonnier on the difference-of-differences (smooth, robust)
+        eps = 1e-6
+        temporal_loss = torch.sqrt((pred_diff - gt_diff) ** 2 + eps).mean()
+
+        return tw * temporal_loss
 
 
 if __name__ == '__main__':

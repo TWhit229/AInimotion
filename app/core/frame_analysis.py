@@ -321,6 +321,7 @@ def _analyze_chunk(
     low_motion_threshold: float,
     scene_cut_threshold: float,
     cancel_event: threading.Event | None,
+    chunk_progress_callback: Callable[[int], None] | None = None,
 ) -> tuple[list[PairInfo], list[int], int, np.ndarray | None, np.ndarray | None]:
     """
     Analyze a chunk of video. Returns (pairs, scene_cuts, frame_count, first_frame, last_frame).
@@ -345,7 +346,7 @@ def _analyze_chunk(
         cmd += ['-vf', f'scale={w}:{h}:flags=lanczos']
     cmd += ['-f', 'rawvideo', '-pix_fmt', 'rgb24', '-vsync', 'passthrough', '-']
 
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **_POPEN_FLAGS)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, **_POPEN_FLAGS)
 
     frame_size = w * h * 3
     pairs = []
@@ -384,9 +385,11 @@ def _analyze_chunk(
             prev_frame = frame
             last_frame = frame
             frame_count += 1
+
+            if chunk_progress_callback and frame_count % 50 == 0:
+                chunk_progress_callback(frame_count)
     finally:
         proc.stdout.close()
-        proc.stderr.close()
         proc.kill()
         proc.wait()
 
@@ -442,25 +445,26 @@ def analyze_video(
     completed_frames = [0] * n_workers
     progress_lock = threading.Lock()
 
+    def chunk_progress(chunk_idx, frames_done):
+        """Called per-frame from each chunk to update overall progress."""
+        with progress_lock:
+            completed_frames[chunk_idx] = frames_done
+            if progress_callback:
+                total_done = sum(completed_frames)
+                progress_callback(total_done, total_frames)
+
     def run_chunk(chunk_idx):
         start_time = chunk_idx * chunk_duration
-        # Last chunk gets any remainder
-        dur = chunk_duration if chunk_idx < n_workers - 1 else 0  # 0 = to end
+        dur = chunk_duration if chunk_idx < n_workers - 1 else 0
         chunk_start_frame = chunk_idx * frames_per_chunk
 
         result = _analyze_chunk(
             path, start_time, dur, chunk_start_frame,
             max_height, duplicate_threshold, low_motion_threshold,
             scene_cut_threshold, cancel_event,
+            chunk_progress_callback=lambda n: chunk_progress(chunk_idx, n),
         )
         chunk_results[chunk_idx] = result
-
-        with progress_lock:
-            completed_frames[chunk_idx] = result[2]
-            if progress_callback:
-                total_done = sum(completed_frames)
-                progress_callback(total_done, total_frames)
-
         return chunk_idx
 
     with ThreadPoolExecutor(max_workers=n_workers) as executor:

@@ -64,10 +64,12 @@ class V5SequenceDataset(Dataset):
         root: str,
         crop_size: int = 256,
         augment: bool = True,
+        consecutive_pairs: bool = False,
     ):
         self.root = root
         self.crop_size = crop_size
         self.augment = augment
+        self.consecutive_pairs = consecutive_pairs
         
         # Find all sequence directories
         self.sequences = sorted([
@@ -89,7 +91,32 @@ class V5SequenceDataset(Dataset):
         
         if not self.sequences:
             raise RuntimeError(f"No sequences found in {root}")
-        
+
+        # Build consecutive pairs: find sequences from the same segment that are adjacent
+        self.consecutive_map: dict[int, int] = {}  # idx -> next_idx
+        if self.consecutive_pairs:
+            # Group by segment (everything before _seq)
+            from collections import defaultdict
+            seg_groups = defaultdict(list)
+            for i, seq_dir in enumerate(self.sequences):
+                name = os.path.basename(seq_dir)
+                # Extract segment key: everything before _seq
+                if '_seq' in name:
+                    seg_key = name[:name.rindex('_seq')]
+                    seq_num = name[name.rindex('_seq')+4:].split('_')[0]
+                    seg_groups[seg_key].append((int(seq_num), i))
+
+            for seg_key, items in seg_groups.items():
+                items.sort()
+                for j in range(len(items) - 1):
+                    seq_a, idx_a = items[j]
+                    seq_b, idx_b = items[j + 1]
+                    # Only link if sequence numbers are adjacent (no gaps)
+                    if seq_b - seq_a <= 2:
+                        self.consecutive_map[idx_a] = idx_b
+
+            print(f"  Consecutive pairs: {len(self.consecutive_map)} linkable sequences")
+
         print(f"V5Dataset: {len(self.sequences)} sequences from {root}")
         if self.motion_scores:
             print(f"  Motion scores: min={min(self.motion_scores):.4f}, "
@@ -103,6 +130,28 @@ class V5SequenceDataset(Dataset):
         """Load a frame as PIL Image."""
         return Image.open(path).convert('RGB')
     
+    def _load_sequence(self, idx: int, top: int, left: int, cs: int, ref_size=None) -> dict | None:
+        """Load a sequence with specific crop coordinates (for consecutive pair alignment)."""
+        seq_dir = self.sequences[idx]
+        frame_paths = sorted([
+            os.path.join(seq_dir, f) for f in os.listdir(seq_dir) if f.endswith('.png')
+        ])
+        if len(frame_paths) < 9:
+            return None
+
+        frames = [self._load_frame(fp) for fp in frame_paths[:9]]
+        w, h = frames[0].size
+        if h < cs or w < cs:
+            cs = min(h, w)
+        top = min(top, h - cs)
+        left = min(left, w - cs)
+
+        frames = [TF.crop(f, top, left, cs, cs) for f in frames]
+        frames = [TF.to_tensor(f) for f in frames]
+        context = frames[:4] + frames[5:8]
+        gt = frames[4]
+        return {'context': torch.stack(context, dim=0), 'gt': gt}
+
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         seq_dir = self.sequences[idx]
         
@@ -173,11 +222,26 @@ class V5SequenceDataset(Dataset):
         context = frames[:4] + frames[5:8]  # 7 frames
         gt = frames[4]
         
-        return {
+        result = {
             'context': torch.stack(context, dim=0),  # (7, 3, H, W)
             'gt': gt,  # (3, H, W)
             'motion_score': self.motion_scores[idx],
         }
+
+        # Load consecutive pair for temporal consistency training
+        if self.consecutive_pairs and idx in self.consecutive_map:
+            next_idx = self.consecutive_map[idx]
+            next_sample = self._load_sequence(next_idx, top, left, cs, frames[0].size if hasattr(frames[0], 'size') else None)
+            if next_sample is not None:
+                result['context_next'] = next_sample['context']
+                result['gt_next'] = next_sample['gt']
+                result['has_consecutive'] = True
+            else:
+                result['has_consecutive'] = False
+        else:
+            result['has_consecutive'] = False
+
+        return result
     
     def get_sampler_weights(self, epoch: int = 0) -> torch.Tensor:
         """

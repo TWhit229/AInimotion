@@ -109,6 +109,8 @@ class Trainer:
             fft_weight_max=loss_cfg.get('fft_weight_max', 1.0),
             gan_weight_max=loss_cfg.get('gan_weight_max', 0.1),
             high_freq_weight=loss_cfg.get('high_freq_weight', 1.5),
+            temporal_weight_max=loss_cfg.get('temporal_weight_max', 0.0),
+            temporal_ramp_epochs=loss_cfg.get('temporal_ramp_epochs', 50),
         ).to(self.device)
 
         # Optimizers
@@ -253,6 +255,7 @@ class Trainer:
             root=data_cfg.get('train_dir', 'training_data/v5'),
             crop_size=data_cfg.get('crop_size', 256),
             augment=True,
+            consecutive_pairs=data_cfg.get('consecutive_pairs', False),
         )
         
         # Weighted sampling (higher motion = sampled more)
@@ -471,6 +474,7 @@ class Trainer:
             'fft': 0, 'gan_g': 0, 'gan_d': 0, 'psnr': 0, 'ssim': 0,
             'routing_balance': 0, 'routing_entropy': 0, 'routing_mean': 0,
             'branch_warp_aux': 0, 'branch_synth_aux': 0,
+            'temporal': 0,
         }
         n_batches = 0
         epoch_start_time = time.time()
@@ -531,7 +535,24 @@ class Trainer:
                     if flow_fwd is not None and flow_bwd is not None:
                         l_flow = (flow_fwd + flow_bwd).abs().mean()
                         total_loss = total_loss + self.loss_fn.flow_weight * l_flow
-                    
+
+                    # Temporal consistency loss (V5.1)
+                    l_temporal = torch.tensor(0.0, device=gt.device)
+                    has_consec = batch.get('has_consecutive', False)
+                    # has_consecutive is a tensor of bools from dataloader; check if any are True
+                    if isinstance(has_consec, torch.Tensor):
+                        has_consec = has_consec.any().item()
+                    if has_consec and 'context_next' in batch:
+                        context_next = batch['context_next'].to(self.device)
+                        gt_next = batch['gt_next'].to(self.device)
+                        frames_next = [context_next[:, i] for i in range(context_next.shape[1])]
+                        output_next = self.model(frames_next)
+                        pred_next = output_next['output']
+                        l_temporal = self.loss_fn.compute_temporal_consistency(
+                            pred, pred_next, gt, gt_next, epoch=self.epoch
+                        )
+                        total_loss = total_loss + l_temporal
+
                     total_loss = total_loss / self.accum_steps
                 
                 # NaN guard — detect and skip before it poisons optimizer state
@@ -626,6 +647,7 @@ class Trainer:
             epoch_losses['routing_mean'] += losses.get('routing_mean', torch.tensor(0.0)).item()
             epoch_losses['branch_warp_aux'] += losses.get('branch_warp_aux', torch.tensor(0.0)).item()
             epoch_losses['branch_synth_aux'] += losses.get('branch_synth_aux', torch.tensor(0.0)).item()
+            epoch_losses['temporal'] += l_temporal.item()
             n_batches += 1
             self.global_step += 1
             

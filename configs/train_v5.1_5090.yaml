@@ -1,0 +1,82 @@
+# V5.1 Fine-tuning Configuration — RTX 5090 (32 GB VRAM)
+# Fine-tunes from V5 best.pt to add:
+#   1. Temporal consistency (reduce flickering between consecutive interpolated frames)
+#   2. Larger deformable offset (reduce ghosting on fast motion)
+#   3. 512x512 crops (better large-motion handling)
+#
+# Resume command:
+#   python scripts/train_v5.py --config configs/train_v5.1_5090.yaml \
+#     --resume model/ainimotion.pt --fresh-optim
+
+# Model (same architecture, increased max_offset)
+model:
+  base_channels: 64
+  n_temporal_layers: 2
+  n_attn_heads: 4
+  window_size: 8
+  n_synth_layers: 2
+  n_synth_points: 9
+  max_offset: 64           # was 32 — doubles deformable attention reach
+
+# Data
+data:
+  train_dir: "/home/travis/Training"
+  val_dir: "/home/travis/Training_val"
+  crop_size: 512            # was 256 — exposes model to larger motions
+  num_workers: 4
+  batch_size: 4             # reduced from 7 (512x512 uses ~4x more VRAM)
+  weighted_sampling: true
+  consecutive_pairs: true   # NEW: load overlapping sequences for temporal consistency
+
+# Training schedule (fine-tuning: shorter, lower LR)
+training:
+  total_epochs: 200
+
+  # Optimizer (lower LR for fine-tuning stability)
+  optimizer: "adamw"
+  learning_rate: 1.0e-4     # was 3e-4
+  weight_decay: 1.0e-4
+  betas: [0.9, 0.999]
+
+  # LR schedule
+  lr_scheduler: "cosine"
+  warmup_epochs: 5
+  min_lr: 1.0e-6
+
+  # Mixed precision
+  amp: true
+  grad_clip: 1.0
+
+  # Gradient accumulation
+  gradient_accumulation_steps: 2  # effective BS = 4 * 2 = 8
+
+  # Checkpointing
+  save_every_n_epochs: 1
+  val_every_n_epochs: 5
+  keep_last_n_checkpoints: 5
+
+# Loss weights
+loss:
+  charbonnier_weight: 1.0
+  edge_weight: 0.5
+  fft_weight_max: 1.0
+  gan_weight_max: 0.0      # no GAN for fine-tuning (add later if needed)
+  high_freq_weight: 1.5
+
+  # NEW: temporal consistency
+  temporal_weight_max: 0.5  # ramps from 0 to 0.5 over first 50 epochs
+  temporal_ramp_epochs: 50
+
+# GAN (disabled for V5.1 fine-tuning)
+discriminator:
+  base_channels: 64
+  lr: 1.0e-4
+  r1_weight: 10.0
+  r1_every_n_steps: 16
+
+# Logging
+logging:
+  wandb: true
+  wandb_project: "ainimotion-v5.1"
+  log_every_n_steps: 50
+  sample_every_n_epochs: 5

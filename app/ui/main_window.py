@@ -332,10 +332,12 @@ class MainWindow(QMainWindow):
         player_action.triggered.connect(self._on_set_player)
         settings_menu.addAction(player_action)
 
+        # Startup info
+        self._log(f"Inference backend: {self.processor.interpolator.backend}")
         if self._vlc_path:
             self._log(f"Video player: {Path(self._vlc_path).name}")
-        else:
-            self._log("Tip: Install VLC (videolan.org) for best playback, or set a player in Settings")
+        if self.processor.action_only:
+            self._log(f"Action-only mode: ON (sensitivity: {self.processor.action_link_seconds}s)")
 
         # Help
         help_menu = menubar.addMenu("&Help")
@@ -461,21 +463,27 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(output_group)
 
-        # ---- Log ----
-        self._log_group = QGroupBox("Log")
-        self._log_group.setObjectName("outputGroup")
-        self._log_group.setMaximumHeight(110)
-        log_layout = QVBoxLayout(self._log_group)
-        log_layout.setContentsMargins(8, 8, 8, 8)
+        # ---- Log (collapsible) ----
+        log_header = QHBoxLayout()
+        self._log_toggle_btn = QPushButton("\u25B6 Log")  # collapsed arrow
+        self._log_toggle_btn.setStyleSheet(
+            "text-align: left; border: none; color: #888; font-weight: bold; font-size: 13px; padding: 2px 4px;"
+        )
+        self._log_toggle_btn.clicked.connect(self._toggle_log)
+        log_header.addWidget(self._log_toggle_btn)
+        log_header.addStretch()
+        main_layout.addLayout(log_header)
 
         self._log_text = QTextEdit()
         self._log_text.setReadOnly(True)
+        self._log_text.setMaximumHeight(120)
         self._log_text.setStyleSheet(
             "background-color: #1a1a28; color: #aaa; "
-            "font-family: 'Consolas', 'Courier New', monospace; font-size: 11px; border: none;"
+            "font-family: 'Consolas', 'Courier New', monospace; font-size: 11px; "
+            "border: 1px solid #3d3d5c; border-radius: 6px;"
         )
-        log_layout.addWidget(self._log_text)
-        main_layout.addWidget(self._log_group)
+        self._log_text.setVisible(False)  # collapsed by default
+        main_layout.addWidget(self._log_text)
 
         # ---- Status Bar ----
         status_row = QHBoxLayout()
@@ -488,9 +496,19 @@ class MainWindow(QMainWindow):
         status_row.addWidget(self._gpu_label)
         main_layout.addLayout(status_row)
 
+    def _toggle_log(self):
+        visible = not self._log_text.isVisible()
+        self._log_text.setVisible(visible)
+        arrow = "\u25BC" if visible else "\u25B6"
+        self._log_toggle_btn.setText(f"{arrow} Log")
+
     def _log(self, msg: str):
         self._log_text.append(msg)
-        # Cap log at 500 lines to prevent memory growth
+        # Auto-expand on errors
+        if 'error' in msg.lower() or 'failed' in msg.lower() or '[!]' in msg:
+            self._log_text.setVisible(True)
+            self._log_toggle_btn.setText("\u25BC Log")
+        # Cap at 500 lines
         doc = self._log_text.document()
         if doc.blockCount() > 500:
             cursor = self._log_text.textCursor()
@@ -1073,15 +1091,32 @@ class MainWindow(QMainWindow):
             self._status_label.setText("Ready \u2014 add video files to begin")
 
     def _update_gpu_info(self):
-        if not torch.cuda.is_available():
-            self._gpu_label.setText("GPU: not available")
-            return
         try:
-            name = torch.cuda.get_device_name(0)
+            # Use pynvml for real GPU-wide VRAM (includes TensorRT, not just PyTorch)
+            from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo, nvmlDeviceGetName
+            nvmlInit()
+            handle = nvmlDeviceGetHandleByIndex(0)
+            mem = nvmlDeviceGetMemoryInfo(handle)
+            name = nvmlDeviceGetName(handle)
+            if isinstance(name, bytes):
+                name = name.decode()
             name = name.replace("NVIDIA GeForce ", "").replace("NVIDIA ", "")
-            allocated = torch.cuda.memory_allocated(0) / 1024**3
-            total = torch.cuda.get_device_properties(0).total_memory / 1024**3
-            self._gpu_label.setText(f"GPU: {name} ({allocated:.1f} / {total:.0f} GB)")
+            used = mem.used / 1024**3
+            total = mem.total / 1024**3
+            self._gpu_label.setText(f"GPU: {name} ({used:.1f} / {total:.0f} GB)")
+        except ImportError:
+            # Fallback to PyTorch (only sees its own allocations)
+            if not torch.cuda.is_available():
+                self._gpu_label.setText("GPU: not available")
+                return
+            try:
+                name = torch.cuda.get_device_name(0)
+                name = name.replace("NVIDIA GeForce ", "").replace("NVIDIA ", "")
+                allocated = torch.cuda.memory_allocated(0) / 1024**3
+                total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                self._gpu_label.setText(f"GPU: {name} ({allocated:.1f} / {total:.0f} GB)")
+            except Exception:
+                self._gpu_label.setText("GPU: unknown")
         except Exception:
             self._gpu_label.setText("GPU: unknown")
 
