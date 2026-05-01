@@ -153,6 +153,7 @@ class Trainer:
         self.val_every = train_cfg.get('val_every_n_epochs', 5)
         
         # GAN config
+        disc_cfg = config.get('discriminator', {})
         self.r1_weight = disc_cfg.get('r1_weight', 10.0)
         self.r1_every = disc_cfg.get('r1_every_n_steps', 16)
         
