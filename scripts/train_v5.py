@@ -459,20 +459,8 @@ class Trainer:
             self.discriminator.load_state_dict(disc_sd, strict=True)
         
         if fresh_optim:
-            print("  [!] --fresh-optim: skipping optimizer states (resetting to fresh)")
-            # Fast-forward G scheduler to correct cosine position for the resumed epoch
-            sched_steps_g = max(0, ckpt['epoch'] + 1 - self.warmup_epochs)
-            if sched_steps_g > 0:
-                for _ in range(sched_steps_g):
-                    self.scheduler_g.step()
-                print(f"  [!] Fast-forwarded G scheduler by {sched_steps_g} steps")
-            # D scheduler only runs during Phase 3 (epoch 500+), so only fast-forward
-            # the number of GAN-phase epochs, not all epochs
-            sched_steps_d = max(0, ckpt['epoch'] + 1 - 500)
-            if sched_steps_d > 0:
-                for _ in range(sched_steps_d):
-                    self.scheduler_d.step()
-                print(f"  [!] Fast-forwarded D scheduler by {sched_steps_d} steps")
+            print("  [!] --fresh-optim: fresh optimizer + scheduler (fine-tuning mode)")
+            # Don't fast-forward schedulers — start fresh cosine from epoch 0
         else:
             self.optimizer_g.load_state_dict(ckpt['optimizer_g_state_dict'])
             self.optimizer_d.load_state_dict(ckpt['optimizer_d_state_dict'])
@@ -482,11 +470,17 @@ class Trainer:
             except (ValueError, KeyError) as e:
                 print(f"  [!] Could not restore scheduler state ({e}), using fresh scheduler")
         
-        self.epoch = ckpt['epoch'] + 1  # Resume from NEXT epoch
-        self.global_step = ckpt['global_step']
-        self.best_psnr = ckpt.get('best_psnr', 0.0)
-        
-        print(f"  Resumed from epoch {self.epoch - 1} (step {self.global_step})")
+        if fresh_optim:
+            # Fine-tuning: reset epoch to 0 (new training run with old weights)
+            self.epoch = 0
+            self.global_step = 0
+            self.best_psnr = 0.0
+            print(f"  Fine-tuning from epoch 0 (loaded weights from epoch {ckpt['epoch']})")
+        else:
+            self.epoch = ckpt['epoch'] + 1
+            self.global_step = ckpt['global_step']
+            self.best_psnr = ckpt.get('best_psnr', 0.0)
+            print(f"  Resumed from epoch {self.epoch - 1} (step {self.global_step})")
         print(f"  Best PSNR so far: {self.best_psnr:.2f} dB")
     
     def _warmup_lr(self, epoch: int, step_in_epoch: int, total_steps: int):
