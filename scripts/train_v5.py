@@ -96,6 +96,10 @@ class Trainer:
         # Default mode uses Triton kernel fusion for throughput on Linux
         self.model = torch.compile(self.model)
         
+        # Set total_epochs before discriminator (needed for scheduler T_max)
+        train_cfg = config.get('training', {})
+        self.total_epochs = train_cfg.get('total_epochs', 800)
+
         # Build discriminator (used in Phase 3)
         self.discriminator, self.optimizer_d, self.scheduler_d = self._create_discriminator()
         disc_params = sum(p.numel() for p in self.discriminator.parameters())
@@ -114,8 +118,7 @@ class Trainer:
             warp_loss_weight=loss_cfg.get('warp_loss_weight', 0.0),
         ).to(self.device)
 
-        # Optimizers
-        train_cfg = config.get('training', {})
+        # Optimizers (train_cfg already set above)
         self.optimizer_g = torch.optim.AdamW(
             self.model.parameters(),
             lr=train_cfg.get('learning_rate', 3e-4),
@@ -124,7 +127,7 @@ class Trainer:
         )
 
         # LR scheduler
-        total_epochs = train_cfg.get('total_epochs', 800)
+        total_epochs = self.total_epochs
         warmup = train_cfg.get('warmup_epochs', 10)
         min_lr = train_cfg.get('min_lr', 1e-6)
 
