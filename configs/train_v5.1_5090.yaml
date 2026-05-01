@@ -22,9 +22,9 @@ model:
 data:
   train_dir: "/home/travis/Training"
   val_dir: "/home/travis/Training_val"
-  crop_size: 512            # was 256 — exposes model to larger motions
+  crop_size: 384            # was 256 — exposes model to larger motions (384² fits in 32GB)
   num_workers: 4
-  batch_size: 4             # reduced from 7 (512x512 uses ~4x more VRAM)
+  batch_size: 2             # small due to larger crops + temporal loss
   weighted_sampling: true
   consecutive_pairs: true   # NEW: load overlapping sequences for temporal consistency
 

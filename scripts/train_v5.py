@@ -568,17 +568,18 @@ class Trainer:
                         total_loss = total_loss + self.loss_fn.flow_weight * l_flow
 
                     # Temporal consistency loss (V5.1)
+                    # Second forward pass uses no_grad to halve memory cost
                     l_temporal = torch.tensor(0.0, device=gt.device)
                     has_consec = batch.get('has_consecutive', False)
-                    # has_consecutive is a tensor of bools from dataloader; check if any are True
                     if isinstance(has_consec, torch.Tensor):
                         has_consec = has_consec.any().item()
                     if has_consec and 'context_next' in batch:
                         context_next = batch['context_next'].to(self.device)
                         gt_next = batch['gt_next'].to(self.device)
                         frames_next = [context_next[:, i] for i in range(context_next.shape[1])]
-                        output_next = self.model(frames_next)
-                        pred_next = output_next['output']
+                        with torch.no_grad():
+                            output_next = self.model(frames_next)
+                            pred_next = output_next['output']
                         l_temporal = self.loss_fn.compute_temporal_consistency(
                             pred, pred_next, gt, gt_next, epoch=self.epoch
                         )
