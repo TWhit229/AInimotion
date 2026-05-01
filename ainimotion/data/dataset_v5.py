@@ -130,7 +130,7 @@ class V5SequenceDataset(Dataset):
         """Load a frame as PIL Image."""
         return Image.open(path).convert('RGB')
     
-    def _load_sequence(self, idx: int, top: int, left: int, cs: int, ref_size=None) -> dict | None:
+    def _load_sequence(self, idx: int, top: int, left: int, cs: int) -> dict | None:
         """Load a sequence with specific crop coordinates (for consecutive pair alignment)."""
         seq_dir = self.sequences[idx]
         frame_paths = sorted([
@@ -229,17 +229,21 @@ class V5SequenceDataset(Dataset):
         }
 
         # Load consecutive pair for temporal consistency training
-        if self.consecutive_pairs and idx in self.consecutive_map:
-            next_idx = self.consecutive_map[idx]
-            next_sample = self._load_sequence(next_idx, top, left, cs, frames[0].size if hasattr(frames[0], 'size') else None)
-            if next_sample is not None:
-                result['context_next'] = next_sample['context']
-                result['gt_next'] = next_sample['gt']
-                result['has_consecutive'] = True
-            else:
-                result['has_consecutive'] = False
-        else:
-            result['has_consecutive'] = False
+        # ALL samples must have the same keys (dataloader collation requirement)
+        if self.consecutive_pairs:
+            got_next = False
+            if idx in self.consecutive_map:
+                next_idx = self.consecutive_map[idx]
+                next_sample = self._load_sequence(next_idx, top, left, cs)
+                if next_sample is not None:
+                    result['context_next'] = next_sample['context']
+                    result['gt_next'] = next_sample['gt']
+                    got_next = True
+            if not got_next:
+                # Dummy tensors (same shape, zeros) — training loop checks has_consecutive
+                result['context_next'] = torch.zeros_like(result['context'])
+                result['gt_next'] = torch.zeros_like(result['gt'])
+            result['has_consecutive'] = got_next
 
         return result
     
