@@ -414,22 +414,23 @@ class Trainer:
         # into the compiled model with strict=False silently drops ALL weights.
         gen_sd = strip_compiled_prefix(ckpt['generator_state_dict'])
 
-        # Remap affine_head keys if checkpoint predates ONNX-compatible BackgroundPath
-        # Old: AdaptiveAvgPool2d(0), Flatten(1), Linear(2)... → New: Flatten(0), Linear(1)...
-        remapped = {}
-        for k, v in gen_sd.items():
-            if 'background_path.affine_head.' in k:
-                parts = k.split('.')
-                idx_pos = parts.index('affine_head') + 1
-                old_idx = int(parts[idx_pos])
-                if old_idx >= 2:
-                    parts[idx_pos] = str(old_idx - 1)
-                    remapped['.'.join(parts)] = v
-            else:
-                remapped[k] = v
-        if len(remapped) != len(gen_sd):
-            print(f"  [!] Remapped {len(gen_sd)} affine_head keys for ONNX-compatible model")
-        gen_sd = remapped
+        # Remap affine_head keys ONLY if checkpoint has old format (indices 2,4,6)
+        # New format has indices 1,3,5 — skip remapping if already correct
+        needs_remap = any('background_path.affine_head.2.' in k for k in gen_sd)
+        if needs_remap:
+            remapped = {}
+            for k, v in gen_sd.items():
+                if 'background_path.affine_head.' in k:
+                    parts = k.split('.')
+                    idx_pos = parts.index('affine_head') + 1
+                    old_idx = int(parts[idx_pos])
+                    if old_idx >= 2:
+                        parts[idx_pos] = str(old_idx - 1)
+                        remapped['.'.join(parts)] = v
+                else:
+                    remapped[k] = v
+            gen_sd = remapped
+            print(f"  [!] Remapped old affine_head keys to new format")
 
         if hasattr(self.model, '_orig_mod'):
             result = self.model._orig_mod.load_state_dict(gen_sd, strict=True)
@@ -438,19 +439,21 @@ class Trainer:
 
         if 'ema_state_dict' in ckpt:
             ema_sd = strip_compiled_prefix(ckpt['ema_state_dict'])
-            # Remap EMA affine_head keys (same shift, but keys have 'module.' prefix)
-            ema_remapped = {}
-            for k, v in ema_sd.items():
-                if 'background_path.affine_head.' in k:
-                    parts = k.split('.')
-                    idx_pos = parts.index('affine_head') + 1
-                    old_idx = int(parts[idx_pos])
-                    if old_idx >= 2:
-                        parts[idx_pos] = str(old_idx - 1)
-                        ema_remapped['.'.join(parts)] = v
-                else:
-                    ema_remapped[k] = v
-            self.ema_model.load_state_dict(ema_remapped, strict=True)
+            # Remap EMA affine_head keys only if old format
+            if any('background_path.affine_head.2.' in k for k in ema_sd):
+                ema_remapped = {}
+                for k, v in ema_sd.items():
+                    if 'background_path.affine_head.' in k:
+                        parts = k.split('.')
+                        idx_pos = parts.index('affine_head') + 1
+                        old_idx = int(parts[idx_pos])
+                        if old_idx >= 2:
+                            parts[idx_pos] = str(old_idx - 1)
+                            ema_remapped['.'.join(parts)] = v
+                    else:
+                        ema_remapped[k] = v
+                ema_sd = ema_remapped
+            self.ema_model.load_state_dict(ema_sd, strict=True)
 
         disc_sd = strip_compiled_prefix(ckpt['discriminator_state_dict'])
         if hasattr(self.discriminator, '_orig_mod'):
