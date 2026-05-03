@@ -573,20 +573,29 @@ class Trainer:
                     # Temporal consistency loss (V5.1)
                     # Second forward pass uses no_grad to halve memory cost
                     l_temporal = torch.tensor(0.0, device=gt.device)
-                    has_consec = batch.get('has_consecutive', False)
-                    if isinstance(has_consec, torch.Tensor):
-                        has_consec = has_consec.any().item()
-                    if has_consec and 'context_next' in batch:
-                        context_next = batch['context_next'].to(self.device)
-                        gt_next = batch['gt_next'].to(self.device)
-                        frames_next = [context_next[:, i] for i in range(context_next.shape[1])]
-                        with torch.no_grad():
-                            output_next = self.model(frames_next)
-                            pred_next = output_next['output']
-                        l_temporal = self.loss_fn.compute_temporal_consistency(
-                            pred, pred_next, gt, gt_next, epoch=self.epoch
-                        )
-                        total_loss = total_loss + l_temporal
+                    has_consec = batch.get('has_consecutive', None)
+                    if has_consec is not None and 'context_next' in batch:
+                        # Per-sample mask: only compute on samples with real data
+                        if isinstance(has_consec, torch.Tensor):
+                            mask = has_consec.bool()
+                        else:
+                            mask = torch.tensor([has_consec], device=gt.device).bool()
+                        if mask.any():
+                            context_next = batch['context_next'].to(self.device)
+                            gt_next = batch['gt_next'].to(self.device)
+                            # Only forward valid samples to avoid wasting compute on zeros
+                            valid_ctx = context_next[mask]
+                            valid_gt_next = gt_next[mask]
+                            valid_pred = pred[mask]
+                            valid_gt = gt[mask]
+                            frames_next = [valid_ctx[:, i] for i in range(valid_ctx.shape[1])]
+                            with torch.no_grad():
+                                output_next = self.model(frames_next)
+                                pred_next = output_next['output']
+                            l_temporal = self.loss_fn.compute_temporal_consistency(
+                                valid_pred, pred_next, valid_gt, valid_gt_next, epoch=self.epoch
+                            )
+                            total_loss = total_loss + l_temporal
 
                     total_loss = total_loss / self.accum_steps
                 
