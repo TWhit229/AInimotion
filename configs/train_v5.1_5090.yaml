@@ -64,8 +64,11 @@ loss:
   high_freq_weight: 1.5
 
   # NEW: temporal consistency (reduces flickering)
-  temporal_weight_max: 0.5  # ramps from 0 to 0.5 over first 50 epochs
-  temporal_ramp_epochs: 50
+  # 0.5 was too aggressive — overwhelmed reconstruction losses and caused
+  # oscillations + collapse at epoch 50. 0.1 over 100 epochs is gentle enough
+  # to regularize without competing with charbonnier/edge losses (~0.01 scale).
+  temporal_weight_max: 0.1
+  temporal_ramp_epochs: 100
 
   # NEW: warping loss (direct flow supervision — reduces ghosting)
   warp_loss_weight: 0.3
