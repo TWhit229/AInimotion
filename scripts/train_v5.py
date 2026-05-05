@@ -571,7 +571,8 @@ class Trainer:
                         total_loss = total_loss + self.loss_fn.flow_weight * l_flow
 
                     # Temporal consistency loss (V5.1)
-                    # Second forward pass uses no_grad to halve memory cost
+                    # Uses EMA model as stable target network (like DQN/BYOL)
+                    # to avoid moving-target oscillations from using self.model.
                     l_temporal = torch.tensor(0.0, device=gt.device)
                     has_consec = batch.get('has_consecutive', None)
                     if has_consec is not None and 'context_next' in batch:
@@ -590,8 +591,10 @@ class Trainer:
                             valid_gt = gt[mask]
                             frames_next = [valid_ctx[:, i] for i in range(valid_ctx.shape[1])]
                             with torch.no_grad():
-                                output_next = self.model(frames_next)
+                                self.ema_model.eval()
+                                output_next = self.ema_model(frames_next)
                                 pred_next = output_next['output']
+                                self.ema_model.train()
                             l_temporal = self.loss_fn.compute_temporal_consistency(
                                 valid_pred, pred_next, valid_gt, valid_gt_next, epoch=self.epoch
                             )
@@ -837,6 +840,8 @@ class Trainer:
             print(f"    SSIM:        {metrics['ssim']:.3f}")
             print(f"    Routing:     mean={metrics['routing_mean']:.3f} balance={metrics['routing_balance']:.4f} entropy={metrics['routing_entropy']:.4f}")
             print(f"    Branch Aux:  warp={metrics['branch_warp_aux']:.4f} synth={metrics['branch_synth_aux']:.4f}")
+            if metrics.get('temporal', 0) > 0:
+                print(f"    Temporal:    {metrics['temporal']:.4f} (weight={self.loss_fn.get_temporal_weight(epoch):.4f})")
             if self.gan_active:
                 print(f"    GAN (G/D):   {metrics['gan_g']:.4f} / {metrics['gan_d']:.4f}")
             
@@ -845,6 +850,8 @@ class Trainer:
                 'epoch/train_psnr': metrics['psnr'],
                 'epoch/charbonnier': metrics['charbonnier'],
                 'epoch/fft': metrics['fft'],
+                'epoch/temporal': metrics.get('temporal', 0),
+                'epoch/temporal_weight': self.loss_fn.get_temporal_weight(epoch),
                 'epoch/routing_mean': metrics['routing_mean'],
                 'epoch/routing_balance': metrics['routing_balance'],
                 'epoch/routing_entropy': metrics['routing_entropy'],
@@ -853,28 +860,24 @@ class Trainer:
                 'epoch': epoch,
             }
             
-            # Validation
-            eval_psnr = metrics['psnr']  # fallback: use train PSNR
+            # Validation — best model is ONLY updated on val epochs (not inflated train PSNR)
             if val_dataloader and (epoch + 1) % self.val_every == 0:
                 val_metrics = self.validate(val_dataloader)
-                eval_psnr = val_metrics['psnr']
                 print(f"    Val PSNR:    {val_metrics['psnr']:.2f} dB")
                 print(f"    Val Loss:    {val_metrics['loss']:.4f}")
                 log_metrics['epoch/val_psnr'] = val_metrics['psnr']
                 log_metrics['epoch/val_loss'] = val_metrics['loss']
-            
+                if val_metrics['psnr'] > self.best_psnr:
+                    self.best_psnr = val_metrics['psnr']
+                    self.save_checkpoint('best.pt')
+                    print(f"    ** New best val PSNR: {self.best_psnr:.2f} dB")
+
             self._log(log_metrics)
-            
+
             # Save checkpoint
             if (epoch + 1) % self.save_every == 0 or epoch == self.total_epochs - 1:
                 self.save_checkpoint()
                 print(f"    Saved checkpoint")
-            
-            # Best model (based on val PSNR when available)
-            if eval_psnr > self.best_psnr:
-                self.best_psnr = eval_psnr
-                self.save_checkpoint('best.pt')
-                print(f"    ** New best PSNR: {self.best_psnr:.2f} dB")
         
         print(f"\n{'='*60}")
         print(f"Training complete! Best PSNR: {self.best_psnr:.2f} dB")

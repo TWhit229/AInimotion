@@ -26,7 +26,7 @@ data:
   num_workers: 4
   batch_size: 2             # small due to larger crops + temporal loss
   weighted_sampling: true
-  consecutive_pairs: true   # NEW: load overlapping sequences for temporal consistency
+  consecutive_pairs: true   # load overlapping sequences for temporal consistency
 
 # Training schedule (fine-tuning: shorter, lower LR)
 training:
@@ -48,7 +48,7 @@ training:
   grad_clip: 1.0
 
   # Gradient accumulation
-  gradient_accumulation_steps: 2  # effective BS = 4 * 2 = 8
+  gradient_accumulation_steps: 2  # effective BS = 2 * 2 = 4
 
   # Checkpointing
   save_every_n_epochs: 1
@@ -63,11 +63,10 @@ loss:
   gan_weight_max: 0.0      # no GAN for fine-tuning (add later if needed)
   high_freq_weight: 1.5
 
-  # NEW: temporal consistency (reduces flickering)
-  # 0.5 was too aggressive — overwhelmed reconstruction losses and caused
-  # oscillations + collapse at epoch 50. 0.1 over 100 epochs is gentle enough
-  # to regularize without competing with charbonnier/edge losses (~0.01 scale).
-  temporal_weight_max: 0.1
+  # Temporal consistency (reduces flickering)
+  # Uses EMA model as stable target network (avoids moving-target oscillations).
+  # 0.05 max keeps it as gentle regularizer (~50% of charbonnier scale at peak).
+  temporal_weight_max: 0.05
   temporal_ramp_epochs: 100
 
   # NEW: warping loss (direct flow supervision — reduces ghosting)
